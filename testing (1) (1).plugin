@@ -1,0 +1,4432 @@
+__id__ = "tele_tools"
+__name__ = "TeleTools"
+__description__ = "Перехватывает удалённые сообщения и помечает их иконкой рядом со временем. 7 моделей иконки, настройка цвета и размера."
+__author__ = "@alwaysflyning"
+__version__ = "12.2.27"
+__icon__ = "TeleTools/0"
+__min_version__ = "12.2.3"
+
+from typing import Any, List
+import os
+import time
+import json
+
+from base_plugin import BasePlugin, HookResult, HookStrategy, MethodHook
+from hook_utils import find_class
+from android_utils import run_on_ui_thread
+from client_utils import get_last_fragment
+from ui.bulletin import BulletinHelper
+from ui.settings import Header, Divider, Switch, Selector, Text
+
+# ── Цвета ────────────────────────────────────────────────────────────────────
+ICON_COLOR_NAMES = [
+    "Красный", "Оранжевый", "Жёлтый", "Зелёный", "Синий",
+    "Фиолетовый", "Белый", "Розовый", "Голубой", "Золотой",
+    "Лаймовый", "Коралловый",
+]
+
+ICON_COLOR_RGB = [
+    (229,  57,  53), (255, 112,  67), (255, 214,   0), ( 67, 160,  71),
+    ( 30, 136, 229), (142,  36, 170), (255, 255, 255), (240,  98, 146),
+    ( 79, 195, 247), (255, 193,   7), (139, 195,  74), (255,  87,  51),
+]
+
+ICON_SIZES_DP    = [10, 12, 14, 16, 18]
+ICON_MODEL_NAMES = ["👁  Глаз","🗑  Корзина","👻  Призрак","❤️  Сердце","⭐  Звезда","💀  Череп","🔥  Огонь"]
+
+EYE_COLOR_NAMES = ICON_COLOR_NAMES
+EYE_COLOR_RGB   = ICON_COLOR_RGB
+EYE_SIZES_DP    = ICON_SIZES_DP
+EYE_PREFIX      = "👁 "
+
+from org.telegram.messenger import ApplicationLoader, MessagesController
+from android.content import ClipboardManager, ClipData
+
+
+# ═══════════════════════════════════════════════════════
+#  SVG ИКОНКИ ДЛЯ НАСТРОЕК
+# ═══════════════════════════════════════════════════════
+
+_SVG_GHOST = (
+    "M12,2 A8,8 0 0,1 20,10 L20,20 "
+    "Q18,18 16,20 Q14,18 12,20 Q10,18 8,20 Q6,18 4,20 "
+    "L4,10 A8,8 0 0,1 12,2 Z "
+    "M9,10 A1.5,1.5 0 1,0 9,13 A1.5,1.5 0 0,0 9,10 Z "
+    "M15,10 A1.5,1.5 0 1,0 15,13 A1.5,1.5 0 0,0 15,10 Z"
+)
+_SVG_EYE = (
+    "M12,5 C7,5 3,9 3,12 C3,15 7,19 12,19 "
+    "C17,19 21,15 21,12 C21,9 17,5 12,5 Z "
+    "M12,16 A4,4 0 1,1 12,8 A4,4 0 0,1 12,16 Z "
+    "M12,11 A1,1 0 1,0 12,13 A1,1 0 0,0 12,11 Z"
+)
+_SVG_PALETTE = (
+    "M12,3 A9,9 0 0,0 3,12 A9,9 0 0,0 12,21 "
+    "A3,3 0 0,0 15,18 A3,3 0 0,0 12,15 "
+    "A9,9 0 0,0 12,3 Z "
+    "M6.5,9.5 A1.5,1.5 0 1,0 6.5,12.5 A1.5,1.5 0 0,0 6.5,9.5 Z "
+    "M9.5,6.5 A1.5,1.5 0 1,0 9.5,9.5 A1.5,1.5 0 0,0 9.5,6.5 Z "
+    "M14.5,6.5 A1.5,1.5 0 1,0 14.5,9.5 A1.5,1.5 0 0,0 14.5,6.5 Z "
+    "M17.5,9.5 A1.5,1.5 0 1,0 17.5,12.5 A1.5,1.5 0 0,0 17.5,9.5 Z"
+)
+_SVG_WRENCH = (
+    "M19.14,2.86 A5,5 0 0,0 14,7 A5,5 0 0,0 14.69,9.31 "
+    "L3,21 L6,21 L6,18 L9,18 L9,15 L11,15 L14.69,11.31 "
+    "A5,5 0 0,0 19,12 A5,5 0 0,0 19.14,2.86 Z"
+)
+_SVG_TRASH = (
+    "M9,3 L9,4 L4,4 L4,6 L20,6 L20,4 L15,4 L15,3 Z "
+    "M5,7 L5,20 A2,2 0 0,0 7,22 L17,22 A2,2 0 0,0 19,20 L19,7 Z "
+    "M9,9 L9,19 M12,9 L12,19 M15,9 L15,19"
+)
+_SVG_CLIPBOARD = (
+    "M16,2 L8,2 A2,2 0 0,0 6,4 L4,4 A2,2 0 0,0 2,6 "
+    "L2,20 A2,2 0 0,0 4,22 L20,22 A2,2 0 0,0 22,20 "
+    "L22,6 A2,2 0 0,0 20,4 L18,4 A2,2 0 0,0 16,2 Z "
+    "M12,2 A1,1 0 0,1 12,4 A1,1 0 0,1 12,2 Z "
+    "M7,12 L17,12 M7,15 L17,15 M7,18 L14,18"
+)
+_SVG_SEARCH = (
+    "M15.5,14 L14,14 L13.5,13.5 "
+    "A6.5,6.5 0 1,0 11,17.5 "
+    "A6.5,6.5 0 0,0 13.5,13.5 "
+    "L14,14 L14,14.5 L19.5,20 L21,18.5 Z "
+    "M11,16 A5,5 0 1,1 11,6 A5,5 0 0,1 11,16 Z"
+)
+_SVG_SAVE = (
+    "M17,3 L5,3 A2,2 0 0,0 3,5 L3,19 A2,2 0 0,0 5,21 "
+    "L19,21 A2,2 0 0,0 21,19 L21,7 Z "
+    "M7,3 L7,8 L15,8 L15,3 "
+    "M12,12 A3,3 0 1,0 12,18 A3,3 0 0,0 12,12 Z"
+)
+
+
+def _make_svg_bitmap(svg_path_str: str, argb_color: int, dp_size: int):
+    try:
+        from android.graphics import Bitmap, Canvas, Paint, Path, PorterDuff
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+        sz      = max(int(dp_size * density), 8)
+        bmp = Bitmap.createBitmap(sz, sz, Bitmap.Config.ARGB_8888)
+        cv  = Canvas(bmp)
+        cv.drawColor(0, PorterDuff.Mode.CLEAR)
+        scale = sz / 24.0
+        cv.scale(scale, scale)
+        path  = Path()
+        paint = Paint()
+        paint.setAntiAlias(True)
+        paint.setColor(argb_color)
+        paint.setStyle(Paint.Style.FILL_AND_STROKE)
+        paint.setStrokeWidth(0.8)
+        paint.setStrokeCap(Paint.Cap.ROUND)
+        paint.setStrokeJoin(Paint.Join.ROUND)
+        _parse_svg_path(path, svg_path_str)
+        cv.drawPath(path, paint)
+        return bmp
+    except Exception:
+        return None
+
+
+def _parse_svg_path(path, d: str):
+    from android.graphics import RectF
+    import re
+    tokens = re.findall(r"[MmLlZzAaCcQqHhVvSsTt]|[-+]?[0-9]*\.?[0-9]+", d)
+    i = 0
+    cmd = "M"
+    cx, cy = 0.0, 0.0
+
+    def nf():
+        nonlocal i
+        v = float(tokens[i]); i += 1; return v
+
+    while i < len(tokens):
+        t = tokens[i]
+        if t.isalpha():
+            cmd = t; i += 1; continue
+        if cmd == "M":
+            x, y = nf(), nf(); path.moveTo(x, y); cx, cy = x, y; cmd = "L"
+        elif cmd == "m":
+            x, y = cx+nf(), cy+nf(); path.moveTo(x, y); cx, cy = x, y; cmd = "l"
+        elif cmd == "L":
+            x, y = nf(), nf(); path.lineTo(x, y); cx, cy = x, y
+        elif cmd == "l":
+            x, y = cx+nf(), cy+nf(); path.lineTo(x, y); cx, cy = x, y
+        elif cmd in ("Z", "z"):
+            path.close()
+        elif cmd == "H":
+            x = nf(); path.lineTo(x, cy); cx = x
+        elif cmd == "h":
+            x = cx+nf(); path.lineTo(x, cy); cx = x
+        elif cmd == "V":
+            y = nf(); path.lineTo(cx, y); cy = y
+        elif cmd == "v":
+            y = cy+nf(); path.lineTo(cx, y); cy = y
+        elif cmd == "C":
+            x1,y1,x2,y2,x,y = nf(),nf(),nf(),nf(),nf(),nf()
+            path.cubicTo(x1,y1,x2,y2,x,y); cx,cy = x,y
+        elif cmd == "c":
+            x1,y1 = cx+nf(),cy+nf(); x2,y2 = cx+nf(),cy+nf(); x,y = cx+nf(),cy+nf()
+            path.cubicTo(x1,y1,x2,y2,x,y); cx,cy = x,y
+        elif cmd == "Q":
+            x1,y1,x,y = nf(),nf(),nf(),nf(); path.quadTo(x1,y1,x,y); cx,cy = x,y
+        elif cmd == "q":
+            x1,y1 = cx+nf(),cy+nf(); x,y = cx+nf(),cy+nf()
+            path.quadTo(x1,y1,x,y); cx,cy = x,y
+        elif cmd == "A":
+            rx,ry,rot,la,sw,x,y = nf(),nf(),nf(),nf(),nf(),nf(),nf()
+            _arc_to(path, cx, cy, rx, ry, rot, int(la), int(sw), x, y); cx,cy = x,y
+        elif cmd == "a":
+            rx,ry,rot,la,sw = nf(),nf(),nf(),nf(),nf(); x,y = cx+nf(), cy+nf()
+            _arc_to(path, cx, cy, rx, ry, rot, int(la), int(sw), x, y); cx,cy = x,y
+        else:
+            i += 1
+
+
+def _arc_to(path, x1, y1, rx, ry, phi, fa, fs, x2, y2):
+    import math
+    from android.graphics import RectF
+    if rx == 0 or ry == 0:
+        path.lineTo(x2, y2); return
+    phi_r = math.radians(phi)
+    cos_p, sin_p = math.cos(phi_r), math.sin(phi_r)
+    dx, dy = (x1-x2)/2.0, (y1-y2)/2.0
+    x1p =  cos_p*dx + sin_p*dy
+    y1p = -sin_p*dx + cos_p*dy
+    r = (x1p*x1p)/(rx*rx) + (y1p*y1p)/(ry*ry)
+    if r > 1:
+        sq = math.sqrt(r); rx *= sq; ry *= sq
+    num = max(0.0, rx*rx*ry*ry - rx*rx*y1p*y1p - ry*ry*x1p*x1p)
+    den = rx*rx*y1p*y1p + ry*ry*x1p*x1p
+    sq  = math.sqrt(num/den) if den else 0
+    if fa == fs: sq = -sq
+    cxp =  sq*rx*y1p/ry
+    cyp = -sq*ry*x1p/rx
+    cx = cos_p*cxp - sin_p*cyp + (x1+x2)/2.0
+    cy = sin_p*cxp + cos_p*cyp + (y1+y2)/2.0
+
+    def ang(ux, uy, vx, vy):
+        n = math.sqrt(ux*ux+uy*uy)*math.sqrt(vx*vx+vy*vy)
+        if n == 0: return 0
+        c = max(-1, min(1, (ux*vx+uy*vy)/n))
+        a = math.degrees(math.acos(c))
+        return -a if (ux*vy-uy*vx)<0 else a
+
+    theta  = ang(1, 0, (x1p-cxp)/rx, (y1p-cyp)/ry)
+    dtheta = ang((x1p-cxp)/rx, (y1p-cyp)/ry, (-x1p-cxp)/rx, (-y1p-cyp)/ry)
+    if fs == 0 and dtheta > 0: dtheta -= 360
+    if fs == 1 and dtheta < 0: dtheta += 360
+    rect = RectF(cx-rx, cy-ry, cx+rx, cy+ry)
+    path.arcTo(rect, theta, dtheta)
+
+
+# ═══════════════════════════════════════════════════════
+#  ИКОНКА ГЛАЗА
+# ═══════════════════════════════════════════════════════
+
+def _make_eye_bitmap(rgb: tuple, dp_size: int):
+    from android.graphics import Bitmap, Canvas, Paint, Path, PorterDuff
+    ctx     = ApplicationLoader.applicationContext
+    density = ctx.getResources().getDisplayMetrics().density
+    h       = max(int(dp_size * density), 8)
+    w       = max(int(dp_size * density * 2.2), 16)
+    r, g, b = rgb
+    bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    cv  = Canvas(bmp)
+    cv.drawColor(0, PorterDuff.Mode.CLEAR)
+    cx = w / 2.0; cy = h / 2.0
+    pad = h * 0.10; lx = pad; rx = w - pad
+    ew = rx - lx; eh = h * 0.48
+    eye_path = Path()
+    eye_path.moveTo(lx, cy)
+    eye_path.cubicTo(lx+ew*0.18, cy-eh, rx-ew*0.18, cy-eh, rx, cy)
+    eye_path.cubicTo(rx-ew*0.18, cy+eh*0.72, lx+ew*0.18, cy+eh*0.72, lx, cy)
+    eye_path.close()
+    cv.save()
+    cv.clipPath(eye_path)
+    p = Paint(); p.setAntiAlias(True); p.setStyle(Paint.Style.FILL)
+    p.setARGB(255, 252, 252, 255); cv.drawRect(0.0, 0.0, float(w), float(h), p)
+    iris_r = eh * 0.90
+    p.setARGB(255, r, g, b); cv.drawCircle(cx, cy, iris_r, p)
+    pupil_r = iris_r * 0.44
+    p.setARGB(255, 15, 15, 22); cv.drawCircle(cx, cy, pupil_r, p)
+    p.setARGB(220, 255, 255, 255)
+    cv.drawCircle(cx+pupil_r*0.32, cy-pupil_r*0.32, pupil_r*0.32, p)
+    cv.restore()
+    sw = Paint(); sw.setAntiAlias(True)
+    sw.setARGB(230, max(r-50,0), max(g-50,0), max(b-50,0))
+    sw.setStyle(Paint.Style.STROKE); sw.setStrokeWidth(h*0.07)
+    sw.setStrokeCap(Paint.Cap.ROUND); sw.setStrokeJoin(Paint.Join.ROUND)
+    cv.drawPath(eye_path, sw)
+    return bmp
+
+
+# ═══════════════════════════════════════════════════════
+#  ИКОНКИ-МОДЕЛИ
+# ═══════════════════════════════════════════════════════
+
+def _sq_canvas(dp_size: int):
+    from android.graphics import Bitmap, Canvas, PorterDuff
+    ctx     = ApplicationLoader.applicationContext
+    density = ctx.getResources().getDisplayMetrics().density
+    sz  = max(int(dp_size * density), 8)
+    bmp = Bitmap.createBitmap(sz, sz, Bitmap.Config.ARGB_8888)
+    cv  = Canvas(bmp)
+    cv.drawColor(0, PorterDuff.Mode.CLEAR)
+    return bmp, cv, sz
+
+
+def _make_trash_bitmap(rgb: tuple, dp_size: int):
+    from android.graphics import Paint, Path
+    bmp, cv, sz = _sq_canvas(dp_size)
+    r, g, b = rgb
+    sw = max(sz * 0.07, 1.5)
+
+    def stroke_paint():
+        p = Paint(); p.setAntiAlias(True)
+        p.setARGB(255, r, g, b); p.setStyle(Paint.Style.STROKE)
+        p.setStrokeWidth(sw); p.setStrokeCap(Paint.Cap.ROUND); p.setStrokeJoin(Paint.Join.ROUND)
+        return p
+
+    def fill_paint(alpha=220):
+        p = Paint(); p.setAntiAlias(True)
+        p.setARGB(alpha, r, g, b); p.setStyle(Paint.Style.FILL)
+        return p
+
+    cx = sz / 2.0
+    hw = sz * 0.20; hh = sz * 0.10; hy = sz * 0.08
+    handle = Path()
+    handle.moveTo(cx-hw/2.0, hy+hh)
+    handle.cubicTo(cx-hw/2.0, hy, cx+hw/2.0, hy, cx+hw/2.0, hy+hh)
+    cv.drawPath(handle, stroke_paint())
+    lid_w = sz * 0.60; lid_y = hy + hh + sw * 0.5
+    lid = Path()
+    lid.moveTo(cx-lid_w/2.0, lid_y); lid.lineTo(cx+lid_w/2.0, lid_y)
+    cv.drawPath(lid, stroke_paint())
+    bdy_y = lid_y + sw * 1.2; bdy_tw = lid_w * 0.92; bdy_bw = lid_w * 0.76; bdy_h = sz * 0.52
+    body = Path()
+    body.moveTo(cx-bdy_tw/2.0, bdy_y); body.lineTo(cx+bdy_tw/2.0, bdy_y)
+    body.lineTo(cx+bdy_bw/2.0, bdy_y+bdy_h); body.lineTo(cx-bdy_bw/2.0, bdy_y+bdy_h); body.close()
+    cv.drawPath(body, fill_paint(55)); cv.drawPath(body, stroke_paint())
+    thin = stroke_paint(); thin.setStrokeWidth(max(sw*0.65, 1.0))
+    for ox in [-bdy_tw*0.24, 0.0, bdy_tw*0.24]:
+        line = Path()
+        line.moveTo(cx+ox, bdy_y+bdy_h*0.14)
+        line.lineTo(cx+ox*(bdy_bw/bdy_tw), bdy_y+bdy_h*0.86)
+        cv.drawPath(line, thin)
+    return bmp
+
+
+def _make_ghost_bitmap(rgb: tuple, dp_size: int):
+    from android.graphics import Paint, Path
+    bmp, cv, sz = _sq_canvas(dp_size)
+    r, g, b = rgb
+    cx = sz / 2.0
+    tw = sz * 0.72; th = sz * 0.80
+    tx = cx - tw / 2.0; ty = sz * 0.08
+    path = Path()
+    path.moveTo(tx, ty+th*0.45)
+    path.cubicTo(tx, ty, tx+tw, ty, tx+tw, ty+th*0.45)
+    path.lineTo(tx+tw, ty+th)
+    zw = tw / 3.0
+    path.cubicTo(tx+tw-zw*0.3, ty+th*0.78, tx+tw-zw*0.7, ty+th*0.78, tx+tw-zw, ty+th)
+    path.cubicTo(tx+tw-zw-zw*0.3, ty+th*0.78, tx+tw-zw-zw*0.7, ty+th*0.78, tx+tw-zw*2, ty+th)
+    path.cubicTo(tx+zw*0.7, ty+th*0.78, tx+zw*0.3, ty+th*0.78, tx, ty+th)
+    path.close()
+    fill = Paint(); fill.setAntiAlias(True); fill.setARGB(220, r, g, b); fill.setStyle(Paint.Style.FILL)
+    cv.drawPath(path, fill)
+    stroke = Paint(); stroke.setAntiAlias(True)
+    stroke.setARGB(255, max(r-50,0), max(g-50,0), max(b-50,0))
+    stroke.setStyle(Paint.Style.STROKE); stroke.setStrokeWidth(sz*0.06)
+    stroke.setStrokeCap(Paint.Cap.ROUND); stroke.setStrokeJoin(Paint.Join.ROUND)
+    cv.drawPath(path, stroke)
+    ep = Paint(); ep.setAntiAlias(True); ep.setARGB(255, 15, 15, 30); ep.setStyle(Paint.Style.FILL)
+    er = sz * 0.07
+    cv.drawCircle(cx-sz*0.14, ty+th*0.35, er, ep)
+    cv.drawCircle(cx+sz*0.14, ty+th*0.35, er, ep)
+    return bmp
+
+
+def _make_heart_bitmap(rgb: tuple, dp_size: int):
+    from android.graphics import Paint, Path
+    bmp, cv, sz = _sq_canvas(dp_size)
+    r, g, b = rgb
+    cx = sz / 2.0; cy = sz * 0.52
+    w2 = sz * 0.44; h2 = sz * 0.40
+    path = Path()
+    path.moveTo(cx, cy+h2)
+    path.cubicTo(cx-w2*1.1, cy+h2*0.3, cx-w2*1.2, cy-h2*0.6, cx-w2*0.5, cy-h2*0.9)
+    path.cubicTo(cx-w2*0.1, cy-h2*1.15, cx, cy-h2*0.7, cx, cy-h2*0.35)
+    path.cubicTo(cx, cy-h2*0.7, cx+w2*0.1, cy-h2*1.15, cx+w2*0.5, cy-h2*0.9)
+    path.cubicTo(cx+w2*1.2, cy-h2*0.6, cx+w2*1.1, cy+h2*0.3, cx, cy+h2)
+    path.close()
+    fill = Paint(); fill.setAntiAlias(True); fill.setARGB(235, r, g, b); fill.setStyle(Paint.Style.FILL)
+    cv.drawPath(path, fill)
+    stroke = Paint(); stroke.setAntiAlias(True)
+    stroke.setARGB(255, max(r-50,0), max(g-50,0), max(b-50,0))
+    stroke.setStyle(Paint.Style.STROKE); stroke.setStrokeWidth(sz*0.06)
+    stroke.setStrokeCap(Paint.Cap.ROUND); stroke.setStrokeJoin(Paint.Join.ROUND)
+    cv.drawPath(path, stroke)
+    blik = Paint(); blik.setAntiAlias(True); blik.setARGB(130, 255, 255, 255); blik.setStyle(Paint.Style.FILL)
+    cv.drawCircle(cx-sz*0.12, cy-sz*0.10, sz*0.07, blik)
+    return bmp
+
+
+def _make_star_bitmap(rgb: tuple, dp_size: int):
+    import math
+    from android.graphics import Paint, Path
+    bmp, cv, sz = _sq_canvas(dp_size)
+    r, g, b = rgb
+    cx = sz / 2.0; cy = sz / 2.0
+    outer = sz * 0.46; inner = sz * 0.20; pts = 5
+    path = Path()
+    for i in range(pts * 2):
+        angle = math.radians(i * 180.0 / pts - 90)
+        rad   = outer if i % 2 == 0 else inner
+        x = cx + rad * math.cos(angle); y = cy + rad * math.sin(angle)
+        if i == 0: path.moveTo(x, y)
+        else:      path.lineTo(x, y)
+    path.close()
+    fill = Paint(); fill.setAntiAlias(True); fill.setARGB(235, r, g, b); fill.setStyle(Paint.Style.FILL)
+    cv.drawPath(path, fill)
+    stroke = Paint(); stroke.setAntiAlias(True)
+    stroke.setARGB(255, max(r-50,0), max(g-50,0), max(b-50,0))
+    stroke.setStyle(Paint.Style.STROKE); stroke.setStrokeWidth(sz*0.06)
+    stroke.setStrokeCap(Paint.Cap.ROUND); stroke.setStrokeJoin(Paint.Join.ROUND)
+    cv.drawPath(path, stroke)
+    return bmp
+
+
+def _make_skull_bitmap(rgb: tuple, dp_size: int):
+    # ИСПРАВЛЕНО: убраны ссылки на неопределённые переменные path/ty/th
+    from android.graphics import Paint, Path, RectF
+    bmp, cv, sz = _sq_canvas(dp_size)
+    r, g, b = rgb
+    cx = sz / 2.0
+    hw = sz * 0.38; hh = sz * 0.36; hy = sz * 0.08
+
+    skull = Path()
+    skull.addRoundRect(RectF(cx-hw, hy, cx+hw, hy+hh*1.4),
+                       hw*0.8, hw*0.8, Path.Direction.CW)
+
+    fill = Paint(); fill.setAntiAlias(True); fill.setARGB(220, r, g, b); fill.setStyle(Paint.Style.FILL)
+    cv.drawPath(skull, fill)
+
+    stroke = Paint(); stroke.setAntiAlias(True)
+    stroke.setARGB(255, max(r-50,0), max(g-50,0), max(b-50,0))
+    stroke.setStyle(Paint.Style.STROKE); stroke.setStrokeWidth(sz*0.065)
+    stroke.setStrokeCap(Paint.Cap.ROUND); stroke.setStrokeJoin(Paint.Join.ROUND)
+    cv.drawPath(skull, stroke)  # ИСПРАВЛЕНО: было path вместо skull
+
+    # Глазницы — ИСПРАВЛЕНО: было ty/th, теперь hy/hh
+    ep = Paint(); ep.setAntiAlias(True); ep.setARGB(255, 15, 15, 22); ep.setStyle(Paint.Style.FILL)
+    er = sz * 0.10
+    cv.drawCircle(cx-sz*0.15, hy+hh*0.50, er, ep)
+    cv.drawCircle(cx+sz*0.15, hy+hh*0.50, er, ep)
+
+    # Нос
+    np2 = Paint(); np2.setAntiAlias(True); np2.setARGB(200, 15, 15, 22); np2.setStyle(Paint.Style.FILL)
+    nose = Path()
+    nose.moveTo(cx, hy+hh*0.78)
+    nose.lineTo(cx-sz*0.06, hy+hh*1.05)
+    nose.lineTo(cx+sz*0.06, hy+hh*1.05)
+    nose.close()
+    cv.drawPath(nose, np2)
+
+    # Зубы
+    jaw_y = hy + hh * 1.15
+    tw2 = sz * 0.12; th2 = sz * 0.14
+    tp = Paint(); tp.setAntiAlias(True)
+    tp.setARGB(255, max(r-50,0), max(g-50,0), max(b-50,0))
+    tp.setStyle(Paint.Style.STROKE); tp.setStrokeWidth(sz*0.055)
+    for ox in [-sz*0.16, 0, sz*0.16]:
+        tr = Path()
+        tr.addRect(RectF(cx+ox-tw2/2, jaw_y, cx+ox+tw2/2, jaw_y+th2), Path.Direction.CW)
+        cv.drawPath(tr, tp)
+    return bmp
+
+
+def _make_fire_bitmap(rgb: tuple, dp_size: int):
+    from android.graphics import Paint, Path
+    bmp, cv, sz = _sq_canvas(dp_size)
+    r, g, b = rgb
+    cx = sz / 2.0
+    fire = Path()
+    fire.moveTo(cx, sz*0.92)
+    fire.cubicTo(cx-sz*0.35, sz*0.75, cx-sz*0.38, sz*0.50, cx-sz*0.15, sz*0.38)
+    fire.cubicTo(cx-sz*0.10, sz*0.55, cx-sz*0.02, sz*0.42, cx, sz*0.08)
+    fire.cubicTo(cx+sz*0.12, sz*0.28, cx+sz*0.22, sz*0.18, cx+sz*0.18, sz*0.38)
+    fire.cubicTo(cx+sz*0.40, sz*0.50, cx+sz*0.38, sz*0.75, cx, sz*0.92)
+    fire.close()
+    fill = Paint(); fill.setAntiAlias(True); fill.setARGB(230, r, g, b); fill.setStyle(Paint.Style.FILL)
+    cv.drawPath(fire, fill)
+    inner = Path()
+    inner.moveTo(cx, sz*0.88)
+    inner.cubicTo(cx-sz*0.18, sz*0.72, cx-sz*0.18, sz*0.55, cx, sz*0.42)
+    inner.cubicTo(cx+sz*0.18, sz*0.55, cx+sz*0.18, sz*0.72, cx, sz*0.88)
+    inner.close()
+    ifill = Paint(); ifill.setAntiAlias(True)
+    ifill.setARGB(180, min(r+80,255), min(g+80,255), min(b+80,255)); ifill.setStyle(Paint.Style.FILL)
+    cv.drawPath(inner, ifill)
+    stroke = Paint(); stroke.setAntiAlias(True)
+    stroke.setARGB(200, max(r-60,0), max(g-60,0), max(b-60,0))
+    stroke.setStyle(Paint.Style.STROKE); stroke.setStrokeWidth(sz*0.055)
+    stroke.setStrokeCap(Paint.Cap.ROUND); stroke.setStrokeJoin(Paint.Join.ROUND)
+    cv.drawPath(fire, stroke)
+    return bmp
+
+
+_ICON_MAKERS = [
+    _make_eye_bitmap,    # 0
+    _make_trash_bitmap,  # 1
+    _make_ghost_bitmap,  # 2
+    _make_heart_bitmap,  # 3
+    _make_star_bitmap,   # 4
+    _make_skull_bitmap,  # 5
+    _make_fire_bitmap,   # 6
+]
+
+def make_icon_bitmap(model_idx: int, rgb: tuple, dp_size: int):
+    idx = max(0, min(model_idx, len(_ICON_MAKERS) - 1))
+    return _ICON_MAKERS[idx](rgb, dp_size)
+
+
+def _get_field_value(obj, *field_names):
+    cls = obj.getClass()
+    while cls is not None:
+        for name in field_names:
+            try:
+                f = cls.getDeclaredField(name)
+                f.setAccessible(True)
+                return f.get(obj)
+            except Exception:
+                pass
+        try:
+            cls = cls.getSuperclass()
+        except Exception:
+            break
+    return None
+
+
+# ═══════════════════════════════════════════════════════
+#  ЛОГГЕР
+# ═══════════════════════════════════════════════════════
+
+class FileLogger:
+    MAX_LINES = 1000
+
+    def __init__(self):
+        base = ApplicationLoader.applicationContext.getFilesDir().getAbsolutePath()
+        self.path = os.path.join(base, "tele_tools.log")
+
+    def write(self, msg: str):
+        try:
+            ts = time.strftime("%d.%m %H:%M:%S", time.localtime())
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {msg}\n")
+            self._trim()
+        except Exception:
+            pass
+
+    def clear(self):
+        try:
+            open(self.path, "w").close()
+        except Exception:
+            pass
+
+    def size_str(self) -> str:
+        try:
+            return f"{os.path.getsize(self.path) / 1024:.1f} KB"
+        except Exception:
+            return "0 KB"
+
+    def tail(self, n: int = 30) -> str:
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            return "".join(lines[-n:]).strip() or "(лог пустой)"
+        except Exception:
+            return "(лог пустой)"
+
+    def _trim(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            if len(lines) > self.MAX_LINES:
+                with open(self.path, "w", encoding="utf-8") as f:
+                    f.writelines(lines[-self.MAX_LINES:])
+        except Exception:
+            pass
+
+
+# ═══════════════════════════════════════════════════════
+#  ХРАНИЛИЩЕ УДАЛЁННЫХ ID + ТЕКСТ СООБЩЕНИЙ
+# ═══════════════════════════════════════════════════════
+
+class DeletedStore:
+    MAX_IDS = 5000
+
+    def __init__(self, log: FileLogger):
+        self._log  = log
+        base       = ApplicationLoader.applicationContext.getFilesDir().getAbsolutePath()
+        self._path = os.path.join(base, "tele_tools_deleted.json")
+        self._ids:   set  = set()
+        self._texts: dict = {}   # {str(msg_id): {"text": ..., "sender": ...}}
+        self._load()
+
+    def __contains__(self, item):
+        return item in self._ids
+
+    def add(self, msg_id: int, text: str = "", sender: str = ""):
+        self._ids.add(msg_id)
+        if text:
+            self._texts[str(msg_id)] = {"text": text, "sender": sender}
+        self._save()
+
+    def get_text(self, msg_id: int) -> str:
+        return self._texts.get(str(msg_id), {}).get("text", "")
+
+    def get_sender(self, msg_id: int) -> str:
+        return self._texts.get(str(msg_id), {}).get("sender", "")
+
+    def clear(self):
+        self._ids.clear()
+        self._texts.clear()
+        self._save()
+
+    def size(self) -> int:
+        return len(self._ids)
+
+    def _load(self):
+        try:
+            if os.path.exists(self._path):
+                with open(self._path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self._ids   = set(int(x) for x in data.get("ids", []))
+                self._texts = data.get("texts", {})
+                self._log.write(f"DeletedStore: loaded {len(self._ids)} ids")
+            else:
+                self._ids   = set()
+                self._texts = {}
+                self._log.write("DeletedStore: starting fresh")
+        except Exception as e:
+            self._ids   = set()
+            self._texts = {}
+            self._log.write(f"DeletedStore load err: {e}")
+
+    def _save(self):
+        try:
+            ids_list = sorted(self._ids)
+            if len(ids_list) > self.MAX_IDS:
+                ids_list = ids_list[-self.MAX_IDS:]
+                self._ids = set(ids_list)
+                keep_keys = set(str(i) for i in ids_list)
+                self._texts = {k: v for k, v in self._texts.items() if k in keep_keys}
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump({"ids": ids_list, "texts": self._texts}, f, ensure_ascii=False)
+        except Exception as e:
+            self._log.write(f"DeletedStore save err: {e}")
+
+
+# ═══════════════════════════════════════════════════════
+#  ХУК: setMessageObject
+#  — кэширует текст сообщений ДО удаления
+#  — помечает удалённые EYE_PREFIX
+#  — патчит цитату удалённого сообщения в ответах
+# ═══════════════════════════════════════════════════════
+
+class MessageCellHook(MethodHook):
+    def __init__(self, plugin: "Plugin"):
+        self.plugin = plugin
+
+    def before_hooked_method(self, param):
+        try:
+            msg_obj = param.args[0]
+            if msg_obj is None:
+                return
+            owner = msg_obj.messageOwner
+            msg_id = int(msg_obj.getId())
+
+            # ── 1. Кэшируем текст каждого сообщения пока оно живо ────────────
+            try:
+                if owner and owner.message:
+                    raw = str(owner.message)
+                    if not raw.startswith(EYE_PREFIX):
+                        sender = ""
+                        try:
+                            fid = owner.from_id
+                            if fid:
+                                sender = str(fid.user_id if hasattr(fid, 'user_id') else fid)
+                        except Exception:
+                            pass
+                        self.plugin._msg_cache[msg_id] = {"text": raw, "sender": sender}
+            except Exception as ce:
+                self.plugin._flog.write(f"cache err: {ce}")
+
+            # ── 2. Патчим цитату если это ответ на удалённое сообщение ───────
+            if owner is not None:
+                self._patch_deleted_reply(msg_obj, owner)
+
+            # ── 3. Помечаем само удалённое сообщение ─────────────────────────
+            if msg_id not in self.plugin._store:
+                return
+            current = str(owner.message) if owner and owner.message else ""
+            if not current.startswith(EYE_PREFIX):
+                if owner:
+                    owner.message = EYE_PREFIX + current
+            try:
+                mt = msg_obj.messageText
+                mt_str = str(mt) if mt is not None else current
+                if not mt_str.startswith(EYE_PREFIX):
+                    from android.text import SpannableString
+                    msg_obj.messageText = SpannableString(EYE_PREFIX + mt_str)
+            except Exception as e:
+                self.plugin._flog.write(f"messageText err: {e}")
+
+        except Exception as e:
+            self.plugin._flog.write(f"MessageCellHook err: {e}")
+
+    def _patch_deleted_reply(self, msg_obj, owner):
+        """
+        Если сообщение является ответом на удалённое — подставляем
+        текст удалённого сообщения в поле replyMessageObject так,
+        чтобы Telegram отобразил его как цитату.
+        """
+        try:
+            reply_id = 0
+            try:
+                reply_id = int(owner.reply_to_msg_id)
+            except Exception:
+                try:
+                    rt = owner.reply_to
+                    if rt:
+                        reply_id = int(rt.reply_to_msg_id)
+                except Exception:
+                    pass
+
+            if not reply_id or reply_id not in self.plugin._store:
+                return
+
+            # Получаем текст из хранилища
+            saved_text = self.plugin._store.get_text(reply_id)
+            if not saved_text:
+                saved_text = self.plugin._msg_cache.get(reply_id, {}).get("text", "")
+            if not saved_text:
+                return
+
+            # Проверяем: replyMessageObject уже есть? Если нет — создаём фейковый
+            try:
+                rmo = _get_field_value(msg_obj, "replyMessageObject")
+                if rmo is not None:
+                    # Уже есть объект ответа — не трогаем
+                    return
+            except Exception:
+                pass
+
+            # Создаём TLRPC.TL_message с текстом удалённого сообщения
+            try:
+                from org.telegram.tgnet import TLRPC
+                fake = TLRPC.TL_message()
+                fake.id      = reply_id
+                fake.message = f"🗑 {saved_text[:200]}"
+                fake.flags   = 0
+
+                sender_id = self.plugin._store.get_sender(reply_id)
+                if not sender_id:
+                    sender_id = self.plugin._msg_cache.get(reply_id, {}).get("sender", "")
+                if sender_id:
+                    try:
+                        from org.telegram.tgnet import TLRPC as TL2
+                        peer = TL2.TL_peerUser()
+                        peer.user_id = int(sender_id)
+                        fake.from_id = peer
+                    except Exception:
+                        pass
+
+                # Пробуем поставить replyMessageObject через рефлексию
+                cls = msg_obj.getClass()
+                while cls is not None:
+                    try:
+                        f = cls.getDeclaredField("replyMessageObject")
+                        f.setAccessible(True)
+                        # Создаём MessageObject-обёртку над fake
+                        from org.telegram.messenger import MessageObject as MO
+                        account = 0
+                        try:
+                            account = int(msg_obj.currentAccount)
+                        except Exception:
+                            pass
+                        fake_mo = MO(account, fake, None, True)
+                        f.set(msg_obj, fake_mo)
+                        self.plugin._flog.write(
+                            f"reply_patch: injected quote for reply_to={reply_id}"
+                        )
+                        break
+                    except Exception:
+                        pass
+                    try:
+                        cls = cls.getSuperclass()
+                    except Exception:
+                        break
+            except Exception as ie:
+                self.plugin._flog.write(f"reply_patch inject err: {ie}")
+
+        except Exception as e:
+            self.plugin._flog.write(f"_patch_deleted_reply err: {e}")
+
+
+# ═══════════════════════════════════════════════════════
+#  ХУК: deleteMessages — сохраняем текст ДО удаления
+# ═══════════════════════════════════════════════════════
+
+class DeleteMessagesHook(MethodHook):
+    def __init__(self, plugin: "Plugin"):
+        self.plugin = plugin
+
+    def before_hooked_method(self, param):
+        try:
+            msg_ids = param.args[0]
+            if msg_ids is None:
+                return
+            ids_arr = list(msg_ids.toArray())
+            self.plugin._flog.write(f"deleteMessages: ids={ids_arr}")
+            # Достаём кэшированный текст для каждого id
+            for mid in ids_arr:
+                mid_int = int(mid)
+                cached = self.plugin._msg_cache.get(mid_int, {})
+                text   = cached.get("text", "")
+                sender = cached.get("sender", "")
+                if text:
+                    self.plugin._flog.write(
+                        f"deleteMessages: saving text for id={mid_int}: {text[:60]}"
+                    )
+                # Сохраняем в store (текст сохранится если есть)
+                self.plugin._store.add(mid_int, text=text, sender=sender)
+        except Exception as e:
+            self.plugin._flog.write(f"DeleteMessagesHook err: {e}")
+
+
+# ═══════════════════════════════════════════════════════
+#  ХУК: onDraw — рисуем иконку рядом со временем
+# ═══════════════════════════════════════════════════════
+
+class MessageCellDrawHook(MethodHook):
+
+    def __init__(self, plugin: "Plugin"):
+        self.plugin = plugin
+        self._bmp_cache: dict = {}
+
+    def _get_bmp(self, model_idx: int, rgb: tuple, dp: int):
+        key = (model_idx, rgb, dp)
+        if key not in self._bmp_cache:
+            self._bmp_cache[key] = make_icon_bitmap(model_idx, rgb, dp)
+        return self._bmp_cache[key]
+
+    def _find_time_layout(self, cell):
+        try:
+            tx = _get_field_value(cell, "timeX")
+            ty = _get_field_value(cell, "timeY")
+            if tx is not None and ty is not None:
+                txi = int(tx); tyi = int(ty)
+                if txi > 0 and tyi > 0:
+                    tl = _get_field_value(cell, "timeLayout")
+                    th = int(tl.getHeight()) if tl is not None else 14
+                    tw = int(tl.getWidth())  if tl is not None else 40
+                    return (txi, tyi - th, tw, th)
+        except Exception as e:
+            self.plugin._flog.write(f"_find_time_layout err: {e}")
+        return None
+
+    def after_hooked_method(self, param):
+        try:
+            canvas = param.args[0]
+            if canvas is None:
+                return
+            cell    = param.thisObject
+            msg_obj = cell.getMessageObject()
+            if msg_obj is None:
+                return
+            msg_id = int(msg_obj.getId())
+            if msg_id not in self.plugin._store:
+                return
+
+            c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+            s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+            m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+            rgb   = ICON_COLOR_RGB[c_idx]
+            dp_sz = ICON_SIZES_DP[s_idx]
+
+            bmp = self._get_bmp(m_idx, rgb, dp_sz)
+            bw  = bmp.getWidth(); bh = bmp.getHeight()
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            gap     = int(1 * density)
+
+            time_layout = self._find_time_layout(cell)
+
+            if time_layout is not None:
+                time_x, time_y, time_w, time_h = time_layout
+                ix = float(time_x + time_w + gap)
+                iy = float(time_y + (time_h - bh) / 2.0)
+            else:
+                time_x_val = _get_field_value(cell, "timeX")
+                cell_h     = cell.getMeasuredHeight()
+                bottom_pad = int(8 * density)
+                if time_x_val is not None and int(time_x_val) > 4:
+                    ix = float(int(time_x_val) + int(52 * density) + gap)
+                else:
+                    ix = float(cell.getMeasuredWidth() - bw - int(8 * density))
+                iy = float(cell_h - bottom_pad - bh)
+
+            cell_w  = float(cell.getMeasuredWidth())
+            cell_hf = float(cell.getMeasuredHeight())
+            if ix + bw > cell_w - int(2 * density): ix = cell_w - bw - int(2 * density)
+            if ix < 0: ix = 0.0
+            if iy + bh > cell_hf: iy = cell_hf - bh - int(2 * density)
+            if iy < 0: iy = 0.0
+
+            from android.graphics import Paint as GPaint
+            p = GPaint(); p.setAlpha(230)
+            canvas.drawBitmap(bmp, ix, iy, p)
+
+        except Exception as e:
+            self.plugin._flog.write(f"DrawHook err: {e}")
+
+
+class Plugin(BasePlugin):
+
+    def on_plugin_load(self) -> None:
+        self._flog      = FileLogger()
+        self._store     = DeletedStore(self._flog)
+        self._draw_hook = MessageCellDrawHook(self)
+        self._ico_cache: dict = {}
+        self._msg_cache: dict = {}   # {msg_id: {"text": ..., "sender": ...}}
+
+        self._flog.write(
+            f"=== TeleTools {__version__} started, "
+            f"restored {self._store.size()} deleted ids ==="
+        )
+
+        self.add_hook("TL_updateDeleteMessages")
+        self.add_hook("TL_updateDeleteChannelMessages")
+        self._flog.write("Delete hooks registered")
+
+        for cls_name, method, hook in [
+            ("org.telegram.messenger.MessagesController", "deleteMessages",   DeleteMessagesHook(self)),
+            ("org.telegram.ui.Cells.ChatMessageCell",     "setMessageObject", MessageCellHook(self)),
+            ("org.telegram.ui.Cells.ChatMessageCell",     "onDraw",           self._draw_hook),
+        ]:
+            try:
+                cls = find_class(cls_name)
+                if cls:
+                    n = len(self.hook_all_methods(cls, method, hook))
+                    self._flog.write(f"{method} hooked: {n}")
+            except Exception as e:
+                self._flog.write(f"hook {method} err: {e}")
+
+        # Официальный хук отправки сообщений
+        self.add_on_send_message_hook()
+        self._flog.write("on_send_message_hook registered")
+
+        self._flog.write("=== Init done ===")
+
+    def on_plugin_unload(self) -> None:
+        self._flog.write("=== TeleTools unloaded ===")
+
+    def on_send_message_hook(self, account: int, params: Any) -> HookResult:
+        """
+        Официальный хук exteraGram.
+        params — SendMessagesHelper.SendMessageParams
+        Если юзер отвечает на удалённое сообщение — вставляем blockquote.
+        """
+        try:
+            if not hasattr(params, 'message') or not isinstance(params.message, str):
+                return HookResult(strategy=HookStrategy.DEFAULT)
+
+            # Ищем reply_to_msg_id в params
+            reply_id = 0
+            for fname in ("replyToMsg", "replyToMsgId", "reply_to_msg_id",
+                          "replyMessage", "replyToMessage"):
+                try:
+                    val = getattr(params, fname, None)
+                    if val is None:
+                        val = _get_field_value(params, fname)
+                    if val is not None:
+                        try:
+                            reply_id = int(val.getId() if hasattr(val, 'getId') else val)
+                        except Exception:
+                            pass
+                    if reply_id > 0:
+                        break
+                except Exception:
+                    pass
+
+            if not reply_id or reply_id not in self._store:
+                return HookResult(strategy=HookStrategy.DEFAULT)
+
+            # Получаем сохранённый текст
+            saved_text = self._store.get_text(reply_id)
+            if not saved_text:
+                saved_text = self._msg_cache.get(reply_id, {}).get("text", "")
+            if not saved_text:
+                self._flog.write(f"on_send_message_hook: no text for id={reply_id}")
+                return HookResult(strategy=HookStrategy.DEFAULT)
+
+            # Имя отправителя удалённого сообщения
+            sender_name = ""
+            try:
+                sid = self._store.get_sender(reply_id)
+                if not sid:
+                    sid = str(self._msg_cache.get(reply_id, {}).get("sender", ""))
+                if sid:
+                    from org.telegram.messenger import MessagesController as MC
+                    user = MC.getInstance(account).getUser(int(sid))
+                    if user:
+                        fn = str(user.first_name or "")
+                        ln = str(user.last_name  or "")
+                        sender_name = (fn + " " + ln).strip()
+            except Exception:
+                pass
+
+            quote_text = (f"{sender_name}: {saved_text}" if sender_name else saved_text)[:200]
+            q_len      = len(quote_text)
+            user_text  = params.message or ""
+            sep        = "\n"
+            full_text  = quote_text + sep + user_text
+
+            try:
+                from org.telegram.tgnet import TLRPC
+                from java.util import ArrayList
+
+                entities = ArrayList()
+
+                # BlockQuote entity
+                bq        = TLRPC.TL_messageEntityBlockquote()
+                bq.offset = 0
+                bq.length = q_len
+                entities.add(bq)
+
+                # Копируем старые entities со сдвигом
+                shift = q_len + len(sep)
+                try:
+                    old_ents = getattr(params, 'entities', None)
+                    if old_ents is None:
+                        old_ents = _get_field_value(params, 'entities', 'messageEntities')
+                    if old_ents is not None:
+                        for e in old_ents:
+                            e.offset += shift
+                            entities.add(e)
+                except Exception:
+                    pass
+
+                params.message  = full_text
+                params.entities = entities
+
+                self._flog.write(
+                    f"on_send_message_hook: OK id={reply_id} "
+                    f"quote='{quote_text[:50]}'"
+                )
+
+                result = HookResult(strategy=HookStrategy.MODIFY)
+                result.params = params
+                return result
+
+            except Exception as e:
+                self._flog.write(f"on_send_message_hook entity err: {e}")
+
+        except Exception as e:
+            self._flog.write(f"on_send_message_hook err: {e}")
+
+        return HookResult(strategy=HookStrategy.DEFAULT)
+
+
+    # ── Хуки ─────────────────────────────────────────────────────────────────
+
+    def on_update_hook(self, update_name: str, account: int, update: Any) -> HookResult:
+        if update_name not in ("TL_updateDeleteMessages", "TL_updateDeleteChannelMessages"):
+            return HookResult(strategy=HookStrategy.DEFAULT)
+        if not self.get_setting("save_deleted", True):
+            return HookResult(strategy=HookStrategy.DEFAULT)
+        try:
+            msg_ids = update.messages
+            if msg_ids:
+                for mid in msg_ids.toArray():
+                    mid_int = int(mid)
+                    cached  = self._msg_cache.get(mid_int, {})
+                    self._store.add(
+                        mid_int,
+                        text=cached.get("text", ""),
+                        sender=cached.get("sender", "")
+                    )
+                    self._draw_hook._bmp_cache.clear()
+                    self._flog.write(f"on_update_hook: saved id={mid_int}")
+        except Exception as e:
+            self._flog.write(f"on_update_hook err: {e}")
+        self._flog.write("on_update_hook: CANCEL")
+        return HookResult(strategy=HookStrategy.CANCEL)
+
+    # ── Иконки для настроек ───────────────────────────────────────────────────
+
+    def _ico(self, path_str: str, color_hex: str = "#8774e1", dp: int = 24):
+        key = (path_str, color_hex, dp)
+        if key not in self._ico_cache:
+            try:
+                from android.graphics import Color
+                from android.graphics.drawable import BitmapDrawable
+                argb = Color.parseColor(color_hex)
+                bmp  = _make_svg_bitmap(path_str, argb, dp)
+                if bmp is not None:
+                    ctx = ApplicationLoader.applicationContext
+                    self._ico_cache[key] = BitmapDrawable(ctx.getResources(), bmp)
+                else:
+                    self._ico_cache[key] = None
+            except Exception as e:
+                self._flog.write(f"_ico err: {e}")
+                self._ico_cache[key] = None
+        return self._ico_cache[key]
+
+    # ── Конфиг ────────────────────────────────────────────────────────────────
+
+    def _cfg_path(self) -> str:
+        base = ApplicationLoader.applicationContext.getFilesDir().getAbsolutePath()
+        return os.path.join(base, "tele_tools_cfg.json")
+
+    def _cfg_load(self) -> dict:
+        try:
+            with open(self._cfg_path(), "r", encoding="utf-8") as f:
+                return json.loads(f.read())
+        except Exception:
+            return {}
+
+    def _cfg_save(self, key: str, value) -> None:
+        try:
+            d = self._cfg_load(); d[key] = value
+            with open(self._cfg_path(), "w", encoding="utf-8") as f:
+                f.write(json.dumps(d))
+        except Exception as e:
+            self._flog.write(f"_cfg_save err: {e}")
+
+    def _cfg_get(self, key: str, default):
+        d = self._cfg_load()
+        if key in d:
+            return d[key]
+        return self.get_setting(key, default)
+
+    def _save_setting_direct(self, key: str, value: int):
+        self._cfg_save(key, value)
+
+    # ── Пикер модели ─────────────────────────────────────────────────────────
+
+    def _show_model_picker(self):
+        def _show():
+            try:
+                from android.app import AlertDialog
+                from android.widget import LinearLayout, ImageView, TextView, ScrollView
+                from android.view import View, Gravity
+                from android.graphics import Color
+                from android.graphics.drawable import GradientDrawable
+
+                ctx     = ApplicationLoader.applicationContext
+                density = ctx.getResources().getDisplayMetrics().density
+
+                current_model_idx = self._cfg_get("icon_model_idx", 0)
+                current_color_idx = self._cfg_get("eye_color_idx",  4)
+                current_size_idx  = self._cfg_get("eye_size_idx",   2)
+                rgb   = ICON_COLOR_RGB[current_color_idx]
+                dp_sz = max(ICON_SIZES_DP[current_size_idx], 22)
+
+                MODEL_LABELS = ["Глаз","Корзина","Призрак","Сердце","Звезда","Череп","Огонь"]
+                dialog_ref = [None]
+
+                scroll    = ScrollView(ctx)
+                container = LinearLayout(ctx)
+                container.setOrientation(LinearLayout.VERTICAL)
+                pad = int(14 * density)
+                container.setPadding(pad, int(8*density), pad, pad)
+
+                for idx, label in enumerate(MODEL_LABELS):
+                    row = LinearLayout(ctx)
+                    row.setOrientation(LinearLayout.HORIZONTAL)
+                    row.setGravity(Gravity.CENTER_VERTICAL)
+                    rpad = int(10 * density)
+                    row.setPadding(rpad, rpad, rpad, rpad)
+                    row.setClickable(True); row.setFocusable(True)
+
+                    if idx == current_model_idx:
+                        sel_bg = GradientDrawable()
+                        sel_bg.setColor(Color.parseColor("#1A8774e1"))
+                        sel_bg.setCornerRadius(int(10 * density))
+                        sel_bg.setStroke(int(2 * density), Color.parseColor("#8774e1"))
+                        row.setBackground(sel_bg)
+
+                    bmp      = make_icon_bitmap(idx, rgb, dp_sz)
+                    ico_view = ImageView(ctx)
+                    ico_view.setImageBitmap(bmp)
+                    lp_ico = LinearLayout.LayoutParams(int(40*density), int(28*density))
+                    lp_ico.setMargins(0, 0, int(14*density), 0)
+                    ico_view.setLayoutParams(lp_ico)
+                    ico_view.setScaleType(ImageView.ScaleType.CENTER_INSIDE)
+                    row.addView(ico_view)
+
+                    name_tv = TextView(ctx)
+                    name_tv.setText(label); name_tv.setTextSize(16)
+                    lp_name = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0)
+                    name_tv.setLayoutParams(lp_name)
+                    if idx == current_model_idx:
+                        name_tv.setTypeface(None, 1)
+                        name_tv.setTextColor(Color.parseColor("#8774e1"))
+                    row.addView(name_tv)
+
+                    if idx == current_model_idx:
+                        check_tv = TextView(ctx)
+                        check_tv.setText("\u2713"); check_tv.setTextSize(20)
+                        check_tv.setTextColor(Color.parseColor("#8774e1"))
+                        check_tv.setTypeface(None, 1)
+                        row.addView(check_tv)
+
+                    def make_listener(i, lbl):
+                        from java import dynamic_proxy
+                        class _L(dynamic_proxy(View.OnClickListener)):
+                            def onClick(self_l, v):
+                                try:
+                                    self._save_setting_direct("icon_model_idx", i)
+                                    self._draw_hook._bmp_cache.clear()
+                                    if dialog_ref[0] is not None:
+                                        dialog_ref[0].dismiss()
+                                    BulletinHelper.show_info(f"Модель: {lbl}", get_last_fragment())
+                                except Exception as ex:
+                                    self._flog.write(f"model_click err: {ex}")
+                        return _L()
+                    row.setOnClickListener(make_listener(idx, label))
+                    container.addView(row)
+
+                scroll.addView(container)
+                builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+                builder.setTitle("Модель иконки")
+                builder.setView(scroll)
+                builder.setNegativeButton("Отмена", None)
+                dlg = builder.create()
+                dialog_ref[0] = dlg
+                dlg.show()
+
+            except Exception as e:
+                self._flog.write(f"_show_model_picker err: {e}")
+                BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+        run_on_ui_thread(_show)
+
+    # ── Превью цветов ─────────────────────────────────────────────────────────
+
+    def _show_color_preview(self):
+        def _show():
+            try:
+                from android.app import AlertDialog
+                from android.widget import LinearLayout, ImageView, TextView, ScrollView
+                from android.view import Gravity
+                from android.graphics import Color
+                from android.graphics.drawable import GradientDrawable
+
+                ctx     = ApplicationLoader.applicationContext
+                density = ctx.getResources().getDisplayMetrics().density
+
+                current_color_idx = self._cfg_get("eye_color_idx",  4)
+                current_size_idx  = self._cfg_get("eye_size_idx",   2)
+                current_model_idx = self._cfg_get("icon_model_idx", 0)
+
+                scroll    = ScrollView(ctx)
+                container = LinearLayout(ctx)
+                container.setOrientation(LinearLayout.VERTICAL)
+                pad = int(16 * density)
+                container.setPadding(pad, pad, pad, pad)
+
+                model_label = ICON_MODEL_NAMES[current_model_idx]
+                title = TextView(ctx)
+                title.setText(f"Выбери цвет  •  {model_label}")
+                title.setTextSize(16); title.setTypeface(None, 1)
+                title.setGravity(Gravity.CENTER)
+                title.setPadding(0, 0, 0, int(14*density))
+                container.addView(title)
+
+                dp_sz = max(ICON_SIZES_DP[current_size_idx], 20)
+
+                for idx, (name, rgb) in enumerate(zip(ICON_COLOR_NAMES, ICON_COLOR_RGB)):
+                    row = LinearLayout(ctx)
+                    row.setOrientation(LinearLayout.HORIZONTAL)
+                    row.setGravity(Gravity.CENTER_VERTICAL)
+                    row.setPadding(int(10*density), int(9*density), int(10*density), int(9*density))
+
+                    if idx == current_color_idx:
+                        sel_bg = GradientDrawable()
+                        sel_bg.setColor(Color.parseColor("#1A8774e1"))
+                        sel_bg.setCornerRadius(int(10 * density))
+                        sel_bg.setStroke(int(2 * density), Color.parseColor("#8774e1"))
+                        row.setBackground(sel_bg)
+
+                    bmp_prev = make_icon_bitmap(current_model_idx, rgb, dp_sz)
+                    ico_view = ImageView(ctx)
+                    ico_view.setImageBitmap(bmp_prev)
+                    lp_ico = LinearLayout.LayoutParams(int(42*density), int(28*density))
+                    lp_ico.setMargins(0, 0, int(14*density), 0)
+                    ico_view.setLayoutParams(lp_ico)
+                    ico_view.setScaleType(ImageView.ScaleType.CENTER_INSIDE)
+                    row.addView(ico_view)
+
+                    name_tv = TextView(ctx)
+                    name_tv.setText(name); name_tv.setTextSize(15)
+                    lp_name = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0)
+                    name_tv.setLayoutParams(lp_name)
+                    if idx == current_color_idx:
+                        name_tv.setTypeface(None, 1)
+                        name_tv.setTextColor(Color.parseColor("#8774e1"))
+                    row.addView(name_tv)
+
+                    if idx == current_color_idx:
+                        check = TextView(ctx)
+                        check.setText("\u2713"); check.setTextSize(18)
+                        check.setTextColor(Color.parseColor("#8774e1"))
+                        check.setTypeface(None, 1)
+                        row.addView(check)
+
+                    container.addView(row)
+
+                info_pad = int(12 * density)
+                info_bg  = GradientDrawable()
+                info_bg.setColor(Color.parseColor("#F0F0FF"))
+                info_bg.setCornerRadius(int(10 * density))
+                info_wrap = LinearLayout(ctx)
+                info_wrap.setOrientation(LinearLayout.VERTICAL)
+                info_wrap.setPadding(info_pad, info_pad, info_pad, info_pad)
+                info_wrap.setBackground(info_bg)
+                lp_info = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                lp_info.setMargins(0, int(16*density), 0, 0)
+                info_wrap.setLayoutParams(lp_info)
+
+                lbl = TextView(ctx)
+                lbl.setText("Текущие настройки")
+                lbl.setTextSize(13); lbl.setTypeface(None, 1)
+                lbl.setTextColor(Color.parseColor("#8774e1"))
+                lbl.setPadding(0, 0, 0, int(6*density))
+                info_wrap.addView(lbl)
+
+                val = TextView(ctx)
+                color_name = ICON_COLOR_NAMES[current_color_idx]
+                size_dp    = ICON_SIZES_DP[current_size_idx]
+                val.setText(f"Цвет: {color_name}  \u2022  Размер: {size_dp}dp  \u2022  {model_label}")
+                val.setTextSize(13)
+                info_wrap.addView(val)
+                container.addView(info_wrap)
+                scroll.addView(container)
+
+                builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+                builder.setTitle("Превью иконки")
+                builder.setView(scroll)
+                builder.setPositiveButton("Закрыть", None)
+                builder.show()
+
+            except Exception as e:
+                self._flog.write(f"_show_color_preview err: {e}")
+                BulletinHelper.show_info(f"Ошибка превью: {e}", get_last_fragment())
+
+        run_on_ui_thread(_show)
+
+    # ═══════════════════════════════════════════════════
+    #  НАСТРОЙКИ
+    # ═══════════════════════════════════════════════════
+
+    def create_settings(self) -> List[Any]:
+        log_size   = self._flog.size_str()  if hasattr(self, "_flog")  else "?"
+        store_size = self._store.size()     if hasattr(self, "_store") else 0
+        save_on    = self.get_setting("save_deleted", True)
+
+        ico_eye       = self._ico(_SVG_EYE,       "#8774e1")
+        ico_palette   = self._ico(_SVG_PALETTE,   "#8774e1")
+        ico_wrench    = self._ico(_SVG_WRENCH,     "#888888")
+        ico_trash     = self._ico(_SVG_TRASH,      "#e15050")
+        ico_clipboard = self._ico(_SVG_CLIPBOARD,  "#8774e1")
+        ico_search    = self._ico(_SVG_SEARCH,     "#8774e1")
+        ico_save      = self._ico(_SVG_SAVE,       "#8774e1")
+
+        def hdr(text, ico=None):
+            try:
+                return Header(text=text, icon=ico) if ico else Header(text=text)
+            except Exception:
+                return Header(text=text)
+
+        def txt(text, ico=None, **kw):
+            try:
+                return Text(text=text, icon=ico, **kw) if ico else Text(text=text, **kw)
+            except Exception:
+                return Text(text=text, **kw)
+
+        return [
+            hdr("Удалённые сообщения", ico_eye),
+            Text(
+                text="Когда кто-то удаляет сообщение — оно остаётся у тебя. Рядом со временем появится иконка. При ответе на удалённое сообщение текст автоматически подставляется как цитата.",
+            ),
+            Switch(
+                key="save_deleted",
+                text="Сохранять удалённые",
+                default=True,
+                subtext="Включено" if save_on else "Выключено",
+            ),
+            Divider(),
+
+            hdr("Внешний вид иконки", ico_palette),
+            txt("Показать превью всех цветов", ico=ico_eye,
+                on_click=lambda v: self._show_color_preview()),
+            txt("Выбрать модель иконки", ico=ico_eye,
+                on_click=lambda v: self._show_model_picker()),
+            Selector(
+                key="eye_color_idx", text="Цвет иконки", default=4,
+                items=ICON_COLOR_NAMES,
+            ),
+            Selector(
+                key="eye_size_idx", text="Размер иконки", default=2,
+                items=["XS — 10dp","S — 12dp","M — 14dp","L — 16dp","XL — 18dp"],
+            ),
+            txt(f"Сохранено удалённых: {store_size} сообщ.", ico=ico_save),
+            txt("Очистить список удалённых", ico=ico_trash, red=True,
+                on_click=lambda v: self._clear_store()),
+            Divider(),
+
+            hdr(f"Отладка  (лог: {log_size})", ico_wrench),
+            txt("Скопировать лог в буфер обмена", ico=ico_clipboard,
+                on_click=lambda v: self._copy_log()),
+            txt("Показать последние 30 строк", ico=ico_search,
+                on_click=lambda v: run_on_ui_thread(
+                    lambda: BulletinHelper.show_info(self._flog.tail(30), get_last_fragment())
+                )),
+            txt("Очистить лог", ico=ico_trash, red=True,
+                on_click=lambda v: self._clear_log()),
+        ]
+
+    # ── Действия ─────────────────────────────────────────────────────────────
+
+    def _clear_store(self):
+        cnt = self._store.size()
+        self._store.clear()
+        self._msg_cache.clear()
+        self._flog.write(f"DeletedStore: cleared {cnt} ids by user")
+        run_on_ui_thread(lambda: BulletinHelper.show_info(
+            f"Удалено {cnt} записей", get_last_fragment()
+        ))
+
+    def _copy_log(self):
+        def _do():
+            try:
+                if not os.path.exists(self._flog.path):
+                    BulletinHelper.show_info("Лог пустой", get_last_fragment()); return
+                with open(self._flog.path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if not content:
+                    BulletinHelper.show_info("Лог пустой", get_last_fragment()); return
+                ctx = ApplicationLoader.applicationContext
+                cb  = ctx.getSystemService(ctx.CLIPBOARD_SERVICE)
+                cb.setPrimaryClip(ClipData.newPlainText("log", content))
+                self._flog.write("Log copied to clipboard")
+                BulletinHelper.show_info(f"Скопировано ({self._flog.size_str()})", get_last_fragment())
+            except Exception as e:
+                self._flog.write(f"_copy_log err: {e}")
+                BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+        run_on_ui_thread(_do)
+
+    def _clear_log(self):
+        def _do():
+            try:
+                self._flog.clear()
+                self._flog.write(f"=== cleared, TeleTools {__version__} ===")
+                BulletinHelper.show_info("Лог очищен", get_last_fragment())
+            except Exception as e:
+                BulletinHelper.show_info(f"Ошибка очистки: {e}", get_last_fragment())
+        run_on_ui_thread(_do)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.8 — не рисуем иконку в постах каналов
+#  Проблема: в ячейках канала timeX/timeY отсутствуют или смещены,
+#  fallback-позиционирование кладёт иконку внутрь текста.
+#  Решение: детектируем пост канала через from_id == None у messageOwner
+#  и через имя класса ячейки — и просто выходим.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_orig_draw_after = MessageCellDrawHook.after_hooked_method
+
+
+def _patched_draw_after(self, param):
+    try:
+        cell = param.thisObject
+
+        # 1. Проверка по имени класса ячейки
+        try:
+            cell_class = cell.getClass().getSimpleName()
+            if any(s in cell_class for s in ("Channel", "Admin", "Feed")):
+                return
+        except Exception:
+            pass
+
+        # 2. Проверка: пост канала = peer_id.channel_id != 0 И from_id is None
+        try:
+            msg_obj = cell.getMessageObject()
+            if msg_obj is not None:
+                owner = msg_obj.messageOwner
+                if owner is not None:
+                    peer = owner.peer_id
+                    if peer is not None:
+                        ch_id = 0
+                        try:
+                            ch_id = int(peer.channel_id)
+                        except Exception:
+                            pass
+                        if ch_id != 0:
+                            # Это канал — проверяем есть ли from_id (юзер vs пост)
+                            try:
+                                fid = owner.from_id
+                                if fid is None:
+                                    return   # пост канала — пропускаем
+                            except Exception:
+                                return       # не можем определить — безопаснее пропустить
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    _orig_draw_after(self, param)
+
+
+MessageCellDrawHook.after_hooked_method = _patched_draw_after
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.9 — рисуем иконку ТОЛЬКО если нашли реальный timeLayout
+#  Проблема v12.2.8: from_id у постов канала иногда не None (именованный канал),
+#  поэтому проверка не срабатывала и fallback клал иконку на кнопку комментариев.
+#  Решение: убираем fallback полностью — если _find_time_layout вернул None,
+#  просто выходим. В обычных чатах timeX/timeY всегда есть. В постах каналов нет.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_orig_draw_after_v2 = MessageCellDrawHook.after_hooked_method
+
+
+def _patched_draw_after_v2(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        # Ищем позицию времени — если не нашли, НЕ рисуем (канальный пост, etc.)
+        time_layout = self._find_time_layout(cell)
+        if time_layout is None:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        bw  = bmp.getWidth()
+        bh  = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+        gap     = int(1 * density)
+
+        time_x, time_y, time_w, time_h = time_layout
+        ix = float(time_x + time_w + gap)
+        iy = float(time_y + (time_h - bh) / 2.0)
+
+        cell_w  = float(cell.getMeasuredWidth())
+        cell_hf = float(cell.getMeasuredHeight())
+        if ix + bw > cell_w - int(2 * density):
+            ix = cell_w - bw - int(2 * density)
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_hf: iy = cell_hf - bh - int(2 * density)
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"DrawHook v2 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _patched_draw_after_v2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.10 — фикс "иконок нет" + правильная защита от кнопок канала
+#
+#  Проблема v12.2.9: убрали fallback полностью → если timeX/timeY == 0
+#  (левые пузыри чужих сообщений), иконка не рисовалась нигде.
+#
+#  Решение:
+#  - Если _find_time_layout нашёл координаты → рисуем рядом со временем (норм)
+#  - Если НЕ нашёл → проверяем есть ли у ячейки инлайн-кнопки / bot layout.
+#    Если кнопки есть → НЕ рисуем (это канальный пост с кнопками).
+#    Если кнопок нет → рисуем по fallback (нижний правый угол пузыря).
+# ══════════════════════════════════════════════════════════════════════════════
+
+_orig_draw_after_v3 = MessageCellDrawHook.after_hooked_method
+
+
+def _has_inline_buttons(cell) -> bool:
+    """Возвращает True если у ячейки есть инлайн/бот кнопки."""
+    for fname in ("botLayout", "replyButtons", "botButtons",
+                  "inlineButtons", "keyboardLayout", "attachedButtons"):
+        try:
+            v = _get_field_value(cell, fname)
+            if v is not None:
+                return True
+        except Exception:
+            pass
+    # Запасной вариант: у ячейки есть метод getReplyMarkup или getBotButtons
+    for mname in ("getReplyMarkup", "getBotButtons", "getKeyboard"):
+        try:
+            m = getattr(cell, mname, None)
+            if m is not None and m() is not None:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _patched_draw_after_v3(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        bw  = bmp.getWidth()
+        bh  = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+        gap     = int(1 * density)
+
+        time_layout = self._find_time_layout(cell)
+
+        if time_layout is not None:
+            # Нашли время — рисуем строго рядом с ним
+            time_x, time_y, time_w, time_h = time_layout
+            ix = float(time_x + time_w + gap)
+            iy = float(time_y + (time_h - bh) / 2.0)
+        else:
+            # Время не нашли — проверяем кнопки
+            if _has_inline_buttons(cell):
+                return  # пост канала с кнопками — пропускаем
+            # Обычный пузырь без кнопок — fallback в нижний правый угол
+            time_x_val = _get_field_value(cell, "timeX")
+            cell_h     = cell.getMeasuredHeight()
+            bottom_pad = int(8 * density)
+            if time_x_val is not None and int(time_x_val) > 4:
+                ix = float(int(time_x_val) + int(52 * density) + gap)
+            else:
+                ix = float(cell.getMeasuredWidth() - bw - int(8 * density))
+            iy = float(cell_h - bottom_pad - bh)
+
+        cell_w  = float(cell.getMeasuredWidth())
+        cell_hf = float(cell.getMeasuredHeight())
+        if ix + bw > cell_w - int(2 * density):
+            ix = cell_w - bw - int(2 * density)
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_hf: iy = cell_hf - bh - int(2 * density)
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"DrawHook v3 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _patched_draw_after_v3
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.11 — диагностика + полная перезапись draw (без цепочек)
+#  Логирует первые 5 срабатываний чтобы понять где ломается
+# ══════════════════════════════════════════════════════════════════════════════
+
+_draw_debug_count = [0]  # счётчик логируемых вызовов
+
+def _patched_draw_final(self, param):
+    debug = _draw_debug_count[0] < 5
+
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+
+        if msg_id not in self.plugin._store:
+            return
+
+        if debug:
+            _draw_debug_count[0] += 1
+            self.plugin._flog.write(f"DRAW_DBG id={msg_id} start")
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            if debug: self.plugin._flog.write("DRAW_DBG bmp=None, abort")
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+        gap     = int(1 * density)
+
+        # Пробуем найти позицию времени
+        tx = _get_field_value(cell, "timeX")
+        ty = _get_field_value(cell, "timeY")
+        tl = _get_field_value(cell, "timeLayout")
+
+        if debug:
+            self.plugin._flog.write(f"DRAW_DBG timeX={tx} timeY={ty} timeLayout={tl is not None}")
+
+        if tx is not None and ty is not None and int(tx) > 0 and int(ty) > 0 and tl is not None:
+            # Лучший случай: всё есть
+            txi = int(tx); tyi = int(ty)
+            th  = int(tl.getHeight())
+            tw  = int(tl.getWidth())
+            ix  = float(txi + tw + gap)
+            iy  = float(tyi - th + (th - bh) / 2.0)
+            if debug: self.plugin._flog.write(f"DRAW_DBG mode=time ix={ix:.0f} iy={iy:.0f}")
+
+        elif tx is not None and ty is not None and int(tx) > 0:
+            # timeY == 0 или нет timeLayout — берём только X
+            txi = int(tx)
+            tw  = int(tl.getWidth()) if tl is not None else int(50 * density)
+            cell_h = cell.getMeasuredHeight()
+            ix = float(txi + tw + gap)
+            iy = float(cell_h - int(10 * density) - bh)
+            if debug: self.plugin._flog.write(f"DRAW_DBG mode=timeX_only ix={ix:.0f} iy={iy:.0f}")
+
+        else:
+            # Нет timeX — проверяем инлайн-кнопки
+            has_btns = False
+            for fname in ("botLayout", "replyButtons", "botButtons", "inlineButtons", "keyboardLayout"):
+                try:
+                    v = _get_field_value(cell, fname)
+                    if v is not None:
+                        has_btns = True
+                        if debug: self.plugin._flog.write(f"DRAW_DBG inline_btn field={fname}")
+                        break
+                except Exception:
+                    pass
+
+            if has_btns:
+                if debug: self.plugin._flog.write("DRAW_DBG skip: has inline buttons")
+                return
+
+            # Fallback: нижний правый угол
+            cell_w = cell.getMeasuredWidth()
+            cell_h = cell.getMeasuredHeight()
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+            if debug: self.plugin._flog.write(f"DRAW_DBG mode=fallback ix={ix:.0f} iy={iy:.0f}")
+
+        # Клэмпим в границы ячейки
+        cell_w  = float(cell.getMeasuredWidth())
+        cell_hf = float(cell.getMeasuredHeight())
+        if ix + bw > cell_w - int(2 * density): ix = cell_w - bw - int(2 * density)
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_hf: iy = cell_hf - bh - int(2 * density)
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+        if debug: self.plugin._flog.write(f"DRAW_DBG drawn at ix={ix:.0f} iy={iy:.0f}")
+
+    except Exception as e:
+        self.plugin._flog.write(f"DrawHook FINAL err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _patched_draw_final
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.12 — правильное позиционирование иконки
+#
+#  Корень всех проблем:
+#  1. В ChatMessageCell нет поля timeY — поэтому _find_time_layout всегда None
+#  2. _has_inline_buttons проверял поля ячейки, которые есть у всех сообщений
+#     → иконка не рисовалась нигде
+#
+#  Решение:
+#  - timeX есть всегда → позиционируем по нему (Y = нижний край пузыря)
+#  - Кнопки проверяем через messageOwner.reply_markup (это надёжно)
+#  - Канальный пост: peer_id.channel_id != 0 И reply_markup присутствует
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _is_channel_post_with_buttons(msg_obj) -> bool:
+    """True если это пост канала С инлайн-кнопками (их не трогаем)."""
+    try:
+        owner = msg_obj.messageOwner
+        if owner is None:
+            return False
+        # Проверяем что это канал
+        try:
+            if int(owner.peer_id.channel_id) == 0:
+                return False   # не канал — рисуем
+        except Exception:
+            return False
+        # Проверяем наличие reply_markup (кнопок)
+        try:
+            rm = owner.reply_markup
+            if rm is not None:
+                return True    # канал + кнопки — пропускаем
+        except Exception:
+            pass
+        return False
+    except Exception:
+        return False
+
+
+def _draw_icon_v12(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        # Пропускаем посты канала с кнопками
+        if _is_channel_post_with_buttons(msg_obj):
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+        gap     = int(2 * density)
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+
+        # timeX — единственное надёжное поле (timeY не существует в этой версии)
+        tx = _get_field_value(cell, "timeX")
+        tl = _get_field_value(cell, "timeLayout")
+
+        if tx is not None and int(tx) > 4:
+            txi = int(tx)
+            tw  = int(tl.getWidth()) if tl is not None else int(44 * density)
+            # X: сразу после текста времени
+            ix = float(txi + tw + gap)
+            # Y: нижний край ячейки минус отступ (где обычно время)
+            bottom_pad = int(9 * density)
+            iy = float(cell_h - bottom_pad - bh)
+        else:
+            # Совсем нет timeX — нижний правый угол
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+
+        # Клэмпим в границы ячейки
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_icon_v12 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v12
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.13
+#  - Для обычных сообщений: иконка вплотную к времени (слева от него)
+#  - Для канальных постов: fallback (правый край) без изменений
+#  - Измеряем ширину времени через Paint если timeLayout.getWidth() == 0
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _measure_time_width(cell, density: float) -> int:
+    """Возвращает ширину текста времени в px."""
+    tl = _get_field_value(cell, "timeLayout")
+    if tl is not None:
+        try:
+            w = int(tl.getWidth())
+            if w > 0:
+                return w
+        except Exception:
+            pass
+    # Запасной вариант: считаем через timeString если есть
+    try:
+        ts = _get_field_value(cell, "currentTimeString")
+        if ts is not None:
+            from android.graphics import Paint
+            p = Paint(); p.setTextSize(12 * density)
+            return int(p.measureText(str(ts))) + int(4 * density)
+    except Exception:
+        pass
+    # Хардкод-фолбэк: типичная ширина времени "22:17" ≈ 34dp
+    return int(34 * density)
+
+
+def _draw_icon_v13(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        # Пропускаем канальные посты с кнопками
+        if _is_channel_post_with_buttons(msg_obj):
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+        bottom_pad = int(9 * density)
+
+        tx = _get_field_value(cell, "timeX")
+
+        if tx is not None and int(tx) > 4:
+            txi = int(tx)
+            tw  = _measure_time_width(cell, density)
+            # Иконка СЛЕВА от времени — прямо перед ним, отступ 2dp
+            gap = int(2 * density)
+            ix  = float(txi - bw - gap)
+            iy  = float(cell_h - bottom_pad - bh)
+        else:
+            # Нет timeX (канальный пост без кнопок) — правый угол
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+
+        # Клэмп
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v13 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v13
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.14
+#  Иконка ПОСЛЕ времени (справа), не перед ним.
+#  Ширину времени измеряем сами через Paint — timeLayout.getWidth() даёт 0.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_time_width_px(cell, density: float) -> int:
+    """Надёжно измеряем ширину строки времени в пикселях."""
+    # 1. Пробуем через currentTimeString + Paint
+    for fname in ("currentTimeString", "timeString", "lastDrawingTimeString"):
+        try:
+            ts = _get_field_value(cell, fname)
+            if ts is not None:
+                s = str(ts).strip()
+                if s:
+                    from android.graphics import Paint
+                    p = Paint()
+                    p.setTextSize(13 * density)
+                    return int(p.measureText(s)) + int(6 * density)
+        except Exception:
+            pass
+    # 2. timeLayout.getWidth() — иногда работает
+    try:
+        tl = _get_field_value(cell, "timeLayout")
+        if tl is not None:
+            w = int(tl.getWidth())
+            if w > 0:
+                return w
+    except Exception:
+        pass
+    # 3. Хардкод "22:17" ≈ 34dp
+    return int(34 * density)
+
+
+def _draw_icon_v14(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        if _is_channel_post_with_buttons(msg_obj):
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+        bottom_pad = int(9 * density)
+
+        tx = _get_field_value(cell, "timeX")
+
+        if tx is not None and int(tx) > 4:
+            txi = int(tx)
+            tw  = _get_time_width_px(cell, density)
+            # ПОСЛЕ времени, отступ 3dp
+            ix  = float(txi + tw + int(3 * density))
+            iy  = float(cell_h - bottom_pad - bh)
+        else:
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v14 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v14
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.15
+#
+#  ФИКС КАНАЛА: messageOwner.post == true только у постов канала.
+#  Это официальное поле из TLRPC.Message — надёжнее любых проверок reply_markup.
+#
+#  ФИКС НАСТРОЕК: цвет текста "Выбрать модель" и "Показать превью"
+#  берётся из текущей темы Telegram (не хардкод белый).
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Финальная draw-функция ────────────────────────────────────────────────────
+
+def _draw_icon_v15(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        # Пост канала — messageOwner.post == True, не рисуем
+        try:
+            if msg_obj.messageOwner is not None and bool(msg_obj.messageOwner.post):
+                return
+        except Exception:
+            pass
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+        bottom_pad = int(9 * density)
+
+        tx = _get_field_value(cell, "timeX")
+
+        if tx is not None and int(tx) > 4:
+            txi = int(tx)
+            tw  = _get_time_width_px(cell, density)
+            ix  = float(txi + tw + int(3 * density))
+            iy  = float(cell_h - bottom_pad - bh)
+        else:
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v15 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v15
+
+
+# ── Фикс цвета текста в настройках ───────────────────────────────────────────
+# "Выбрать модель иконки" и "Показать превью" отображались белым.
+# Патчим create_settings: оборачиваем txt-элементы в правильный цвет темы.
+
+_orig_create_settings = Plugin.create_settings
+
+
+def _patched_create_settings(self):
+    items = _orig_create_settings(self)
+    try:
+        from org.telegram.ui.ActionBar import Theme
+        accent = Theme.getColor("windowBackgroundWhiteBlueText4")
+
+        for item in items:
+            try:
+                # Text-элементы с on_click — это наши кнопки "Показать превью" / "Выбрать модель"
+                if hasattr(item, 'on_click') and item.on_click is not None:
+                    if hasattr(item, 'textColor'):
+                        item.textColor = accent
+            except Exception:
+                pass
+    except Exception as e:
+        self._flog.write(f"_patched_create_settings err: {e}")
+    return items
+
+
+Plugin.create_settings = _patched_create_settings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.16
+#  Рисуем иконку и для постов канала тоже.
+#  Для поста: позиционируем у времени внутри пузыря (выше кнопки комментариев).
+#  Кнопка "Прокомментировать" занимает ~52dp снизу ячейки — вычитаем её.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_icon_v16(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+
+        # Определяем — пост канала или обычное сообщение
+        is_post = False
+        try:
+            if msg_obj.messageOwner is not None:
+                is_post = bool(msg_obj.messageOwner.post)
+        except Exception:
+            pass
+
+        tx = _get_field_value(cell, "timeX")
+
+        if not is_post and tx is not None and int(tx) > 4:
+            # Обычное сообщение — рядом со временем
+            txi    = int(tx)
+            tw     = _get_time_width_px(cell, density)
+            ix     = float(txi + tw + int(3 * density))
+            iy     = float(cell_h - int(9 * density) - bh)
+
+        elif is_post:
+            # Пост канала — кнопка комментариев занимает ~52dp снизу,
+            # время находится чуть выше этой кнопки
+            comment_btn_h = int(52 * density)
+            bottom_pad    = int(10 * density)
+            ix = float(cell_w - bw - int(10 * density))
+            iy = float(cell_h - comment_btn_h - bottom_pad - bh)
+
+        else:
+            # Fallback
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+
+        # Клэмп
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v16 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v16
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.17 — тёмная тема для диалогов "Модель иконки" и "Превью цветов"
+#  Берём все цвета из Theme.getColor() — работает с любой темой Telegram
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _theme_colors():
+    """Возвращает dict с цветами активной темы Telegram."""
+    from org.telegram.ui.ActionBar import Theme
+    from android.graphics import Color
+    def gc(key, fallback):
+        try:
+            return Theme.getColor(key)
+        except Exception:
+            return Color.parseColor(fallback)
+    return {
+        "bg":        gc("dialogBackground",          "#1c1c1e"),
+        "bg_card":   gc("dialogBackgroundGray",      "#2c2c2e"),
+        "text":      gc("dialogTextBlack",           "#ffffff"),
+        "text_hint": gc("dialogTextGray",            "#8e8e93"),
+        "accent":    gc("dialogTextBlue2",           "#8774e1"),
+        "divider":   gc("divider",                   "#3a3a3c"),
+        "sel_bg":    gc("listSelectorSDK21",         "#2a2a2e"),
+    }
+
+
+def _patched_show_model_picker(self):
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.widget import LinearLayout, ImageView, TextView, ScrollView
+            from android.view import View, Gravity
+            from android.graphics import Color
+            from android.graphics.drawable import GradientDrawable
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            current_model_idx = self._cfg_get("icon_model_idx", 0)
+            current_color_idx = self._cfg_get("eye_color_idx",  4)
+            current_size_idx  = self._cfg_get("eye_size_idx",   2)
+            rgb   = ICON_COLOR_RGB[current_color_idx]
+            dp_sz = max(ICON_SIZES_DP[current_size_idx], 22)
+
+            MODEL_LABELS = ["Глаз","Корзина","Призрак","Сердце","Звезда","Череп","Огонь"]
+            dialog_ref = [None]
+
+            root = LinearLayout(ctx)
+            root.setOrientation(LinearLayout.VERTICAL)
+            root.setBackgroundColor(C["bg"])
+
+            scroll    = ScrollView(ctx)
+            container = LinearLayout(ctx)
+            container.setOrientation(LinearLayout.VERTICAL)
+            pad = int(14 * density)
+            container.setPadding(pad, int(8*density), pad, pad)
+            container.setBackgroundColor(C["bg"])
+
+            for idx, label in enumerate(MODEL_LABELS):
+                row = LinearLayout(ctx)
+                row.setOrientation(LinearLayout.HORIZONTAL)
+                row.setGravity(Gravity.CENTER_VERTICAL)
+                rpad = int(10 * density)
+                row.setPadding(rpad, rpad, rpad, rpad)
+                row.setClickable(True); row.setFocusable(True)
+
+                if idx == current_model_idx:
+                    sel_bg = GradientDrawable()
+                    sel_bg.setColor(Color.argb(40, 135, 116, 225))
+                    sel_bg.setCornerRadius(int(10 * density))
+                    sel_bg.setStroke(int(2 * density), C["accent"])
+                    row.setBackground(sel_bg)
+
+                bmp      = make_icon_bitmap(idx, rgb, dp_sz)
+                ico_view = ImageView(ctx)
+                ico_view.setImageBitmap(bmp)
+                lp_ico = LinearLayout.LayoutParams(int(40*density), int(28*density))
+                lp_ico.setMargins(0, 0, int(14*density), 0)
+                ico_view.setLayoutParams(lp_ico)
+                ico_view.setScaleType(ImageView.ScaleType.CENTER_INSIDE)
+                row.addView(ico_view)
+
+                name_tv = TextView(ctx)
+                name_tv.setText(label); name_tv.setTextSize(16)
+                lp_name = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0)
+                name_tv.setLayoutParams(lp_name)
+                if idx == current_model_idx:
+                    name_tv.setTypeface(None, 1)
+                    name_tv.setTextColor(C["accent"])
+                else:
+                    name_tv.setTextColor(C["text"])
+                row.addView(name_tv)
+
+                if idx == current_model_idx:
+                    check_tv = TextView(ctx)
+                    check_tv.setText("\u2713"); check_tv.setTextSize(20)
+                    check_tv.setTextColor(C["accent"])
+                    check_tv.setTypeface(None, 1)
+                    row.addView(check_tv)
+
+                def make_listener(i, lbl):
+                    from java import dynamic_proxy
+                    class _L(dynamic_proxy(View.OnClickListener)):
+                        def onClick(self_l, v):
+                            try:
+                                self._save_setting_direct("icon_model_idx", i)
+                                self._draw_hook._bmp_cache.clear()
+                                if dialog_ref[0] is not None:
+                                    dialog_ref[0].dismiss()
+                                BulletinHelper.show_info(f"Модель: {lbl}", get_last_fragment())
+                            except Exception as ex:
+                                self._flog.write(f"model_click err: {ex}")
+                    return _L()
+                row.setOnClickListener(make_listener(idx, label))
+                container.addView(row)
+
+            scroll.addView(container)
+            root.addView(scroll)
+
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle("Модель иконки")
+            builder.setView(root)
+            builder.setNegativeButton("Отмена", None)
+            dlg = builder.create()
+            try:
+                dlg.getWindow().setBackgroundDrawableResource(
+                    ctx.getResources().getIdentifier(
+                        "abc_dialog_material_background", "drawable", ctx.getPackageName()
+                    )
+                )
+            except Exception:
+                pass
+            dialog_ref[0] = dlg
+            dlg.show()
+            # Красим фон самого окна диалога после show()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+
+        except Exception as e:
+            self._flog.write(f"_show_model_picker err: {e}")
+            BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+def _patched_show_color_preview(self):
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.widget import LinearLayout, ImageView, TextView, ScrollView
+            from android.view import Gravity
+            from android.graphics import Color
+            from android.graphics.drawable import GradientDrawable
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            current_color_idx = self._cfg_get("eye_color_idx",  4)
+            current_size_idx  = self._cfg_get("eye_size_idx",   2)
+            current_model_idx = self._cfg_get("icon_model_idx", 0)
+
+            root = LinearLayout(ctx)
+            root.setOrientation(LinearLayout.VERTICAL)
+            root.setBackgroundColor(C["bg"])
+
+            scroll    = ScrollView(ctx)
+            container = LinearLayout(ctx)
+            container.setOrientation(LinearLayout.VERTICAL)
+            pad = int(16 * density)
+            container.setPadding(pad, pad, pad, pad)
+            container.setBackgroundColor(C["bg"])
+
+            model_label = ICON_MODEL_NAMES[current_model_idx]
+            title = TextView(ctx)
+            title.setText(f"Выбери цвет  •  {model_label}")
+            title.setTextSize(16); title.setTypeface(None, 1)
+            title.setGravity(Gravity.CENTER)
+            title.setTextColor(C["text"])
+            title.setPadding(0, 0, 0, int(14*density))
+            container.addView(title)
+
+            dp_sz = max(ICON_SIZES_DP[current_size_idx], 20)
+
+            for idx, (name, rgb) in enumerate(zip(ICON_COLOR_NAMES, ICON_COLOR_RGB)):
+                row = LinearLayout(ctx)
+                row.setOrientation(LinearLayout.HORIZONTAL)
+                row.setGravity(Gravity.CENTER_VERTICAL)
+                row.setPadding(int(10*density), int(9*density), int(10*density), int(9*density))
+
+                if idx == current_color_idx:
+                    sel_bg = GradientDrawable()
+                    sel_bg.setColor(Color.argb(40, 135, 116, 225))
+                    sel_bg.setCornerRadius(int(10 * density))
+                    sel_bg.setStroke(int(2 * density), C["accent"])
+                    row.setBackground(sel_bg)
+
+                bmp_prev = make_icon_bitmap(current_model_idx, rgb, dp_sz)
+                ico_view = ImageView(ctx)
+                ico_view.setImageBitmap(bmp_prev)
+                lp_ico = LinearLayout.LayoutParams(int(42*density), int(28*density))
+                lp_ico.setMargins(0, 0, int(14*density), 0)
+                ico_view.setLayoutParams(lp_ico)
+                ico_view.setScaleType(ImageView.ScaleType.CENTER_INSIDE)
+                row.addView(ico_view)
+
+                name_tv = TextView(ctx)
+                name_tv.setText(name); name_tv.setTextSize(15)
+                lp_name = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0)
+                name_tv.setLayoutParams(lp_name)
+                if idx == current_color_idx:
+                    name_tv.setTypeface(None, 1)
+                    name_tv.setTextColor(C["accent"])
+                else:
+                    name_tv.setTextColor(C["text"])
+                row.addView(name_tv)
+
+                if idx == current_color_idx:
+                    check = TextView(ctx)
+                    check.setText("\u2713"); check.setTextSize(18)
+                    check.setTextColor(C["accent"])
+                    check.setTypeface(None, 1)
+                    row.addView(check)
+
+                container.addView(row)
+
+            # Блок "текущие настройки"
+            info_pad = int(12 * density)
+            info_bg  = GradientDrawable()
+            info_bg.setColor(C["bg_card"])
+            info_bg.setCornerRadius(int(10 * density))
+            info_wrap = LinearLayout(ctx)
+            info_wrap.setOrientation(LinearLayout.VERTICAL)
+            info_wrap.setPadding(info_pad, info_pad, info_pad, info_pad)
+            info_wrap.setBackground(info_bg)
+            lp_info = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            lp_info.setMargins(0, int(16*density), 0, 0)
+            info_wrap.setLayoutParams(lp_info)
+
+            lbl = TextView(ctx)
+            lbl.setText("Текущие настройки")
+            lbl.setTextSize(13); lbl.setTypeface(None, 1)
+            lbl.setTextColor(C["accent"])
+            lbl.setPadding(0, 0, 0, int(6*density))
+            info_wrap.addView(lbl)
+
+            val = TextView(ctx)
+            color_name = ICON_COLOR_NAMES[current_color_idx]
+            size_dp    = ICON_SIZES_DP[current_size_idx]
+            val.setText(f"Цвет: {color_name}  \u2022  Размер: {size_dp}dp  \u2022  {model_label}")
+            val.setTextSize(13)
+            val.setTextColor(C["text_hint"])
+            info_wrap.addView(val)
+            container.addView(info_wrap)
+
+            scroll.addView(container)
+            root.addView(scroll)
+
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle("Превью иконки")
+            builder.setView(root)
+            builder.setPositiveButton("Закрыть", None)
+            dlg = builder.create()
+            dlg.show()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+
+        except Exception as e:
+            self._flog.write(f"_show_color_preview err: {e}")
+            BulletinHelper.show_info(f"Ошибка превью: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+Plugin._show_model_picker   = _patched_show_model_picker
+Plugin._show_color_preview  = _patched_show_color_preview
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.18
+#  Для постов канала иконка вылетала за пузырь — потому что брали cell_w.
+#  Решение: для постов тоже используем timeX (оно есть и в постах).
+#  Единая логика для всех типов ячеек.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_icon_v18(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+
+        tx = _get_field_value(cell, "timeX")
+
+        if tx is not None and int(tx) > 4:
+            # Работает для обычных сообщений И постов канала одинаково
+            txi = int(tx)
+            tw  = _get_time_width_px(cell, density)
+            ix  = float(txi + tw + int(3 * density))
+            iy  = float(cell_h - int(9 * density) - bh)
+        else:
+            # Совсем нет timeX — нижний правый угол внутри ячейки
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+
+        # Клэмп строго внутри ячейки
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v18 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v18
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.19
+#  X одинаковый для всех (timeX + ширина времени).
+#  Y разный: для поста вычитаем высоту кнопки "Прокомментировать" (~52dp).
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_icon_v19(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+
+        # Пост канала?
+        is_post = False
+        try:
+            if msg_obj.messageOwner is not None:
+                is_post = bool(msg_obj.messageOwner.post)
+        except Exception:
+            pass
+
+        tx = _get_field_value(cell, "timeX")
+
+        if tx is not None and int(tx) > 4:
+            txi = int(tx)
+            tw  = _get_time_width_px(cell, density)
+            # X одинаковый — после времени
+            ix  = float(txi + tw + int(3 * density))
+            # Y: для поста кнопка "Прокомментировать" занимает ~52dp снизу
+            if is_post:
+                comment_h = int(52 * density)
+                iy = float(cell_h - comment_h - int(9 * density) - bh)
+            else:
+                iy = float(cell_h - int(9 * density) - bh)
+        else:
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - bh - int(8 * density))
+
+        # Клэмп внутри ячейки
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v19 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v19
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.20
+#  Два режима позиционирования:
+#  - Обычное сообщение: после времени (timeX + tw + gap)
+#  - Пост канала: СПРАВА от пузыря (правый край ячейки),
+#    Y = уровень строки времени = cell_h - кнопка(52dp) - 14dp - bh/2
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_icon_v20(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+
+        is_post = False
+        try:
+            if msg_obj.messageOwner is not None:
+                is_post = bool(msg_obj.messageOwner.post)
+        except Exception:
+            pass
+
+        if is_post:
+            # Справа от пузыря, на уровне строки времени
+            # Строка времени находится над кнопкой "Прокомментировать" (~52dp)
+            comment_h = int(52 * density)
+            time_row_h = int(20 * density)
+            ix = float(cell_w - bw - int(8 * density))
+            iy = float(cell_h - comment_h - time_row_h // 2 - bh // 2)
+        else:
+            tx = _get_field_value(cell, "timeX")
+            if tx is not None and int(tx) > 4:
+                txi = int(tx)
+                tw  = _get_time_width_px(cell, density)
+                ix  = float(txi + tw + int(3 * density))
+                iy  = float(cell_h - int(9 * density) - bh)
+            else:
+                ix = float(cell_w - bw - int(8 * density))
+                iy = float(cell_h - bh - int(8 * density))
+
+        # Клэмп
+        if ix + bw > cell_w - int(2 * density): ix = float(cell_w - bw - int(2 * density))
+        if ix < 0: ix = 0.0
+        if iy + bh > cell_h - int(1 * density): iy = float(cell_h - bh - int(1 * density))
+        if iy < 0: iy = 0.0
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v20 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v20
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.21
+#  Для поста:
+#    X = timeX + ширина_времени + gap (ставит иконку справа от пузыря)
+#    Y = cell_h - 60dp - bh//2 (уровень строки "👁 1  22:01")
+#
+#  Почему 60dp:
+#    comment_btn ≈ 48dp + time_row_center ≈ 12dp = 60dp от низа ячейки
+#
+#  v12.2.20 было 62dp — иконка ползла на строку реакций (слишком высоко)
+#  v12.2.18 было 9dp  — иконка падала в кнопку комментариев (слишком низко)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_icon_v21(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+
+        is_post = False
+        try:
+            if msg_obj.messageOwner is not None:
+                is_post = bool(msg_obj.messageOwner.post)
+        except Exception:
+            pass
+
+        tx = _get_field_value(cell, "timeX")
+
+        if is_post:
+            # X: справа от пузыря через timeX
+            if tx is not None and int(tx) > 4:
+                txi = int(tx)
+                tw  = _get_time_width_px(cell, density)
+                ix  = float(txi + tw + int(3 * density))
+            else:
+                ix = float(cell_w - bw - int(8 * density))
+            # Y: уровень строки времени (comment_btn≈48dp + time_row_center≈12dp)
+            iy = float(cell_h - int(60 * density) - bh // 2)
+
+        else:
+            # Обычное сообщение — после времени внутри пузыря
+            if tx is not None and int(tx) > 4:
+                txi = int(tx)
+                tw  = _get_time_width_px(cell, density)
+                ix  = float(txi + tw + int(3 * density))
+                iy  = float(cell_h - int(9 * density) - bh)
+            else:
+                ix = float(cell_w - bw - int(8 * density))
+                iy = float(cell_h - bh - int(8 * density))
+
+        # Клэмп по X (только справа), Y не клэмпим чтобы не смещалось
+        if ix < 0: ix = 0.0
+        if iy < 0: iy = 0.0
+        if iy + bh > cell_h: iy = float(cell_h - bh)
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v21 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v21
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.22 — drag-and-drop редактор позиции иконки
+#
+#  В настройках появляются две кнопки:
+#    "📍 Позиция в сообщении" — тащишь иконку на макете сообщения
+#    "📍 Позиция в посте"     — тащишь иконку на макете поста
+#
+#  Сохраняется: msg_icon_dx, msg_icon_dy, post_icon_dx, post_icon_dy (в dp)
+#  Draw-функция читает эти смещения и применяет к базовой позиции.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Drag-редактор ─────────────────────────────────────────────────────────────
+
+def _show_drag_editor(plugin, mode: str):
+    """
+    mode = "msg"  → редактор позиции для обычного сообщения
+    mode = "post" → редактор позиции для поста канала
+    """
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.widget import FrameLayout, TextView, LinearLayout
+            from android.view import View, MotionEvent, Gravity
+            from android.graphics import (Canvas, Paint, Bitmap, Color,
+                                          RectF, Typeface)
+            from android.graphics.drawable import BitmapDrawable
+            from java import dynamic_proxy
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            # Размеры макета
+            W = int(320 * density)
+            H = int(180 * density) if mode == "msg" else int(220 * density)
+
+            # Получаем иконку
+            c_idx = plugin._cfg_get("eye_color_idx",  4)
+            s_idx = plugin._cfg_get("eye_size_idx",   2)
+            m_idx = plugin._cfg_get("icon_model_idx", 0)
+            rgb   = ICON_COLOR_RGB[c_idx]
+            dp_sz = ICON_SIZES_DP[s_idx]
+            icon_bmp = make_icon_bitmap(m_idx, rgb, dp_sz)
+            IW = icon_bmp.getWidth()
+            IH = icon_bmp.getHeight()
+
+            # Сохранённые смещения
+            dx_key = f"{mode}_icon_dx"
+            dy_key = f"{mode}_icon_dy"
+            saved_dx = int(plugin._cfg_get(dx_key, 0) * density)
+            saved_dy = int(plugin._cfg_get(dy_key, 0) * density)
+
+            # Базовая позиция иконки (как в draw-функции)
+            bubble_r   = int(14 * density)
+            bubble_pad = int(12 * density)
+            time_text  = "22:01"
+            time_size  = 13 * density
+
+            tp = Paint(); tp.setAntiAlias(True); tp.setTextSize(time_size)
+            tw = int(tp.measureText(time_text)) + int(6 * density)
+
+            if mode == "msg":
+                bubble_x = int(12 * density)
+                bubble_y = int(20 * density)
+                bubble_w = int(240 * density)
+                bubble_h = int(100 * density)
+                # Позиция времени внутри пузыря (нижний правый)
+                time_x = bubble_x + bubble_w - tw - int(10 * density)
+                time_y = bubble_y + bubble_h - int(18 * density)
+                base_ix = time_x + tw + int(3 * density)
+                base_iy = time_y - IH // 2
+            else:
+                bubble_x = int(12 * density)
+                bubble_y = int(20 * density)
+                bubble_w = int(240 * density)
+                bubble_h = int(140 * density)
+                time_x   = bubble_x + bubble_w - tw - int(10 * density)
+                time_y   = bubble_y + bubble_h - int(52 * density) - int(18 * density)
+                base_ix  = time_x + tw + int(3 * density)
+                base_iy  = time_y - IH // 2
+
+            # Текущая позиция иконки
+            icon_pos = [float(base_ix + saved_dx), float(base_iy + saved_dy)]
+
+            # Рисуем статичный фон (пузырь)
+            bg_bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
+            bg_cv  = Canvas(bg_bmp)
+            bg_cv.drawColor(C["bg"])
+
+            # Пузырь
+            bp = Paint(); bp.setAntiAlias(True)
+            bp.setColor(Color.parseColor("#2a2a3a"))
+            bg_cv.drawRoundRect(
+                RectF(float(bubble_x), float(bubble_y),
+                      float(bubble_x + bubble_w), float(bubble_y + bubble_h)),
+                float(bubble_r), float(bubble_r), bp
+            )
+
+            if mode == "msg":
+                # Текст сообщения
+                mp = Paint(); mp.setAntiAlias(True)
+                mp.setColor(C["text"]); mp.setTextSize(14 * density)
+                bg_cv.drawText("Привет!", float(bubble_x + bubble_pad),
+                               float(bubble_y + bubble_pad + int(14*density)), mp)
+                bg_cv.drawText("Это удалённое сообщение",
+                               float(bubble_x + bubble_pad),
+                               float(bubble_y + bubble_pad + int(36*density)), mp)
+            else:
+                # Пост: текст + разделитель + кнопка комментариев
+                mp = Paint(); mp.setAntiAlias(True)
+                mp.setColor(C["text"]); mp.setTextSize(14 * density)
+                bg_cv.drawText("Пост канала", float(bubble_x + bubble_pad),
+                               float(bubble_y + bubble_pad + int(16*density)), mp)
+                bg_cv.drawText("впн кому нужен тап",
+                               float(bubble_x + bubble_pad),
+                               float(bubble_y + bubble_pad + int(38*density)), mp)
+                # Разделитель
+                dp2 = Paint(); dp2.setColor(Color.parseColor("#3a3a4a"))
+                bg_cv.drawLine(
+                    float(bubble_x + bubble_pad),
+                    float(bubble_y + bubble_h - int(52*density)),
+                    float(bubble_x + bubble_w - bubble_pad),
+                    float(bubble_y + bubble_h - int(52*density)),
+                    dp2
+                )
+                # Кнопка "Прокомментировать"
+                cp = Paint(); cp.setAntiAlias(True)
+                cp.setColor(C["accent"]); cp.setTextSize(14 * density)
+                bg_cv.drawText("💬 Прокомментировать",
+                               float(bubble_x + bubble_pad),
+                               float(bubble_y + bubble_h - int(22*density)), cp)
+
+            # Время
+            tp2 = Paint(); tp2.setAntiAlias(True)
+            tp2.setColor(Color.parseColor("#888888")); tp2.setTextSize(time_size)
+            bg_cv.drawText(time_text, float(time_x), float(time_y), tp2)
+
+            # Подсказка
+            hp = Paint(); hp.setAntiAlias(True)
+            hp.setColor(C["text_hint"]); hp.setTextSize(12 * density)
+            hint = "Потяни иконку на нужное место"
+            bg_cv.drawText(hint,
+                           float(W/2 - hp.measureText(hint)/2),
+                           float(H - int(8*density)), hp)
+
+            # ── Кастомный View с drag ──────────────────────────────────────
+            class DragView(View):
+                def __init__(self, ctx):
+                    super().__init__(ctx)
+                    self._dragging = False
+                    self._off_x = 0.0
+                    self._off_y = 0.0
+
+                def onDraw(self, canvas):
+                    # Фон
+                    canvas.drawBitmap(bg_bmp, 0.0, 0.0, None)
+                    # Иконка
+                    ip = Paint(); ip.setAlpha(220)
+                    canvas.drawBitmap(icon_bmp, icon_pos[0], icon_pos[1], ip)
+
+                def onTouchEvent(self, event):
+                    action = event.getAction()
+                    ex, ey = event.getX(), event.getY()
+                    if action == MotionEvent.ACTION_DOWN:
+                        if (icon_pos[0] - int(20*density) <= ex <= icon_pos[0] + IW + int(20*density) and
+                            icon_pos[1] - int(20*density) <= ey <= icon_pos[1] + IH + int(20*density)):
+                            self._dragging = True
+                            self._off_x = ex - icon_pos[0]
+                            self._off_y = ey - icon_pos[1]
+                        return True
+                    elif action == MotionEvent.ACTION_MOVE and self._dragging:
+                        icon_pos[0] = ex - self._off_x
+                        icon_pos[1] = ey - self._off_y
+                        self.invalidate()
+                        return True
+                    elif action == MotionEvent.ACTION_UP:
+                        self._dragging = False
+                        return True
+                    return super().onTouchEvent(event)
+
+            drag_view = DragView(ctx)
+            drag_view.setLayoutParams(
+                FrameLayout.LayoutParams(W, H)
+            )
+
+            # ── Диалог ────────────────────────────────────────────────────
+            title = "Позиция в сообщении" if mode == "msg" else "Позиция в посте"
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle(title)
+            builder.setView(drag_view)
+
+            dialog_ref = [None]
+
+            def on_save(dlg, which):
+                dx_px = icon_pos[0] - base_ix
+                dy_px = icon_pos[1] - base_iy
+                dx_dp = round(dx_px / density, 1)
+                dy_dp = round(dy_px / density, 1)
+                plugin._cfg_save(dx_key, dx_dp)
+                plugin._cfg_save(dy_key, dy_dp)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info(
+                    f"Сохранено: dx={dx_dp}dp dy={dy_dp}dp",
+                    get_last_fragment()
+                )
+
+            def on_reset(dlg, which):
+                plugin._cfg_save(dx_key, 0)
+                plugin._cfg_save(dy_key, 0)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info("Позиция сброшена", get_last_fragment())
+
+            builder.setPositiveButton("Сохранить", on_save)
+            builder.setNeutralButton("Сброс", on_reset)
+            builder.setNegativeButton("Отмена", None)
+            dlg = builder.create()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+            dialog_ref[0] = dlg
+            dlg.show()
+
+        except Exception as e:
+            plugin._flog.write(f"drag_editor err: {e}")
+            BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+# ── Патчим create_settings — добавляем две кнопки ────────────────────────────
+
+_orig_create_settings_v22 = Plugin.create_settings
+
+
+def _patched_create_settings_v22(self):
+    items = _orig_create_settings_v22(self)
+    try:
+        # Вставляем после "Выбрать модель иконки" (индекс найдём по тексту)
+        ico_pos = self._ico(_SVG_WRENCH, "#8774e1")
+
+        drag_msg  = Text(
+            text="📍 Позиция в сообщении",
+            on_click=lambda v: _show_drag_editor(self, "msg"),
+        )
+        drag_post = Text(
+            text="📍 Позиция в посте",
+            on_click=lambda v: _show_drag_editor(self, "post"),
+        )
+
+        insert_after = None
+        for i, item in enumerate(items):
+            try:
+                if hasattr(item, 'text') and "Выбрать модель" in str(item.text):
+                    insert_after = i
+                    break
+            except Exception:
+                pass
+
+        if insert_after is not None:
+            items.insert(insert_after + 1, drag_post)
+            items.insert(insert_after + 1, drag_msg)
+        else:
+            items.append(drag_msg)
+            items.append(drag_post)
+
+    except Exception as e:
+        self._flog.write(f"settings_v22 err: {e}")
+    return items
+
+
+Plugin.create_settings = _patched_create_settings_v22
+
+
+# ── Финальная draw с поддержкой смещений ─────────────────────────────────────
+
+def _draw_icon_v22(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+
+        cell_w = cell.getMeasuredWidth()
+        cell_h = cell.getMeasuredHeight()
+
+        is_post = False
+        try:
+            if msg_obj.messageOwner is not None:
+                is_post = bool(msg_obj.messageOwner.post)
+        except Exception:
+            pass
+
+        tx = _get_field_value(cell, "timeX")
+
+        if is_post:
+            dx_dp = float(self.plugin._cfg_get("post_icon_dx", 0))
+            dy_dp = float(self.plugin._cfg_get("post_icon_dy", 0))
+            if tx is not None and int(tx) > 4:
+                txi = int(tx)
+                tw  = _get_time_width_px(cell, density)
+                base_ix = float(txi + tw + int(3 * density))
+            else:
+                base_ix = float(cell_w - bw - int(8 * density))
+            base_iy = float(cell_h - int(60 * density) - bh // 2)
+        else:
+            dx_dp = float(self.plugin._cfg_get("msg_icon_dx", 0))
+            dy_dp = float(self.plugin._cfg_get("msg_icon_dy", 0))
+            if tx is not None and int(tx) > 4:
+                txi = int(tx)
+                tw  = _get_time_width_px(cell, density)
+                base_ix = float(txi + tw + int(3 * density))
+                base_iy = float(cell_h - int(9 * density) - bh)
+            else:
+                base_ix = float(cell_w - bw - int(8 * density))
+                base_iy = float(cell_h - bh - int(8 * density))
+
+        ix = base_ix + dx_dp * density
+        iy = base_iy + dy_dp * density
+
+        if ix < 0: ix = 0.0
+        if iy < 0: iy = 0.0
+        if iy + bh > cell_h: iy = float(cell_h - bh)
+
+        from android.graphics import Paint as GPaint
+        p = GPaint(); p.setAlpha(230)
+        canvas.drawBitmap(bmp, ix, iy, p)
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_v22 err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_v22
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.23 — фикс краша "Invalid ID: 30 ColorSpace" (Android 12+)
+#  Причина: Bitmap.createBitmap(w, h, ARGB_8888) вызывает ColorSpace.get(30)
+#  Решение: рисуем фон напрямую в onDraw View, без предварительного Bitmap
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _show_drag_editor_v23(plugin, mode: str):
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.widget import FrameLayout
+            from android.view import View, MotionEvent
+            from android.graphics import (Canvas, Paint, Color, RectF)
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            W = int(320 * density)
+            H = int(180 * density) if mode == "msg" else int(220 * density)
+
+            # Иконка
+            c_idx = plugin._cfg_get("eye_color_idx",  4)
+            s_idx = plugin._cfg_get("eye_size_idx",   2)
+            m_idx = plugin._cfg_get("icon_model_idx", 0)
+            rgb   = ICON_COLOR_RGB[c_idx]
+            dp_sz = ICON_SIZES_DP[s_idx]
+            icon_bmp = make_icon_bitmap(m_idx, rgb, dp_sz)
+            IW = icon_bmp.getWidth()
+            IH = icon_bmp.getHeight()
+
+            # Размеры макета пузыря
+            bubble_x   = int(12 * density)
+            bubble_y   = int(20 * density)
+            bubble_w   = int(240 * density)
+            bubble_h   = int(100 * density) if mode == "msg" else int(140 * density)
+            bubble_r   = float(14 * density)
+            bubble_pad = int(12 * density)
+
+            time_text = "22:01"
+            time_size = 13 * density
+            tp0 = Paint(); tp0.setTextSize(time_size)
+            tw = int(tp0.measureText(time_text)) + int(6 * density)
+
+            time_x = bubble_x + bubble_w - tw - int(10 * density)
+            if mode == "msg":
+                time_y = bubble_y + bubble_h - int(14 * density)
+            else:
+                time_y = bubble_y + bubble_h - int(52 * density) - int(14 * density)
+
+            base_ix = float(time_x + tw + int(3 * density))
+            base_iy = float(time_y - IH)
+
+            # Сохранённые смещения
+            dx_key = f"{mode}_icon_dx"
+            dy_key = f"{mode}_icon_dy"
+            saved_dx = float(plugin._cfg_get(dx_key, 0)) * density
+            saved_dy = float(plugin._cfg_get(dy_key, 0)) * density
+
+            icon_pos = [base_ix + saved_dx, base_iy + saved_dy]
+
+            # ── View — рисует всё сам в onDraw ──────────────────────────
+            class DragView(View):
+                def __init__(self, ctx):
+                    super().__init__(ctx)
+                    self._dragging = False
+                    self._off_x = 0.0
+                    self._off_y = 0.0
+
+                def onDraw(self, cv):
+                    # Фон
+                    bp = Paint(); bp.setAntiAlias(True)
+                    bp.setColor(C["bg"])
+                    cv.drawRect(0.0, 0.0, float(W), float(H), bp)
+
+                    # Пузырь
+                    bp.setColor(Color.parseColor("#2a2a3a"))
+                    cv.drawRoundRect(
+                        RectF(float(bubble_x), float(bubble_y),
+                              float(bubble_x + bubble_w),
+                              float(bubble_y + bubble_h)),
+                        bubble_r, bubble_r, bp
+                    )
+
+                    # Текст
+                    mp = Paint(); mp.setAntiAlias(True)
+                    mp.setColor(C["text"]); mp.setTextSize(14 * density)
+                    if mode == "msg":
+                        cv.drawText("Это удалённое сообщение",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_pad + int(20*density)), mp)
+                    else:
+                        cv.drawText("Пост канала",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_pad + int(20*density)), mp)
+                        cv.drawText("впн кому нужен тап",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_pad + int(44*density)), mp)
+                        # Разделитель
+                        dp2 = Paint()
+                        dp2.setColor(Color.parseColor("#3a3a4a"))
+                        dp2.setStrokeWidth(1.0)
+                        sep_y = float(bubble_y + bubble_h - int(52*density))
+                        cv.drawLine(float(bubble_x + bubble_pad), sep_y,
+                                    float(bubble_x + bubble_w - bubble_pad), sep_y, dp2)
+                        # Кнопка
+                        cp = Paint(); cp.setAntiAlias(True)
+                        cp.setColor(C["accent"]); cp.setTextSize(14 * density)
+                        cv.drawText("Прокомментировать",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_h - int(20*density)), cp)
+
+                    # Время
+                    tp2 = Paint(); tp2.setAntiAlias(True)
+                    tp2.setColor(Color.parseColor("#888888"))
+                    tp2.setTextSize(time_size)
+                    cv.drawText(time_text, float(time_x), float(time_y), tp2)
+
+                    # Иконка
+                    ip = Paint(); ip.setAlpha(220)
+                    cv.drawBitmap(icon_bmp, icon_pos[0], icon_pos[1], ip)
+
+                    # Подсказка
+                    hp = Paint(); hp.setAntiAlias(True)
+                    hp.setColor(C["text_hint"]); hp.setTextSize(12 * density)
+                    hint = "Потяни иконку на нужное место"
+                    cv.drawText(hint,
+                                float(W / 2 - hp.measureText(hint) / 2),
+                                float(H - int(6*density)), hp)
+
+                def onTouchEvent(self, event):
+                    action = event.getAction()
+                    ex, ey = event.getX(), event.getY()
+                    hit_pad = int(24 * density)
+                    if action == MotionEvent.ACTION_DOWN:
+                        if (icon_pos[0] - hit_pad <= ex <= icon_pos[0] + IW + hit_pad and
+                                icon_pos[1] - hit_pad <= ey <= icon_pos[1] + IH + hit_pad):
+                            self._dragging = True
+                            self._off_x = ex - icon_pos[0]
+                            self._off_y = ey - icon_pos[1]
+                        return True
+                    elif action == MotionEvent.ACTION_MOVE and self._dragging:
+                        icon_pos[0] = ex - self._off_x
+                        icon_pos[1] = ey - self._off_y
+                        self.invalidate()
+                        return True
+                    elif action == MotionEvent.ACTION_UP:
+                        self._dragging = False
+                        return True
+                    return super().onTouchEvent(event)
+
+            drag_view = DragView(ctx)
+            drag_view.setLayoutParams(FrameLayout.LayoutParams(W, H))
+
+            def on_save(dlg, which):
+                dx_dp = round((icon_pos[0] - base_ix) / density, 1)
+                dy_dp = round((icon_pos[1] - base_iy) / density, 1)
+                plugin._cfg_save(dx_key, dx_dp)
+                plugin._cfg_save(dy_key, dy_dp)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info(
+                    f"Сохранено dx={dx_dp} dy={dy_dp}dp", get_last_fragment())
+
+            def on_reset(dlg, which):
+                plugin._cfg_save(dx_key, 0)
+                plugin._cfg_save(dy_key, 0)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info("Позиция сброшена", get_last_fragment())
+
+            title = "Позиция в сообщении" if mode == "msg" else "Позиция в посте"
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle(title)
+            builder.setView(drag_view)
+            builder.setPositiveButton("Сохранить", on_save)
+            builder.setNeutralButton("Сброс", on_reset)
+            builder.setNegativeButton("Отмена", None)
+            dlg = builder.create()
+            dlg.show()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+
+        except Exception as e:
+            plugin._flog.write(f"drag_editor_v23 err: {e}")
+            BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+# Заменяем старый drag editor на исправленный
+import functools
+
+_orig_settings_v23 = Plugin.create_settings
+
+
+def _patched_settings_v23(self):
+    items = _orig_settings_v23(self)
+    # Патчим on_click у кнопок позиции на новую функцию
+    for item in items:
+        try:
+            if hasattr(item, 'text') and hasattr(item, 'on_click'):
+                if "Позиция в сообщении" in str(item.text):
+                    item.on_click = lambda v: _show_drag_editor_v23(self, "msg")
+                elif "Позиция в посте" in str(item.text):
+                    item.on_click = lambda v: _show_drag_editor_v23(self, "post")
+        except Exception:
+            pass
+    return items
+
+
+Plugin.create_settings = _patched_settings_v23
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.24 — фикс "Java classes can only be inherited using static_proxy"
+#  View нельзя наследовать напрямую — нужен dynamic_proxy/static_proxy.
+#  Решение: используем SurfaceView через static_proxy + рисуем через SurfaceHolder,
+#  или проще — создаём кастомный View через android.view.View с dynamic_proxy.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _show_drag_editor_v24(plugin, mode: str):
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.widget import FrameLayout
+            from android.view import View, MotionEvent
+            from android.graphics import (Paint, Color, RectF)
+            from java import dynamic_proxy, static_proxy
+            from java.lang import Runnable
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            W = int(320 * density)
+            H = int(180 * density) if mode == "msg" else int(220 * density)
+
+            # Иконка
+            c_idx = plugin._cfg_get("eye_color_idx",  4)
+            s_idx = plugin._cfg_get("eye_size_idx",   2)
+            m_idx = plugin._cfg_get("icon_model_idx", 0)
+            rgb   = ICON_COLOR_RGB[c_idx]
+            dp_sz = ICON_SIZES_DP[s_idx]
+            icon_bmp = make_icon_bitmap(m_idx, rgb, dp_sz)
+            IW = icon_bmp.getWidth()
+            IH = icon_bmp.getHeight()
+
+            bubble_x   = int(12 * density)
+            bubble_y   = int(20 * density)
+            bubble_w   = int(240 * density)
+            bubble_h   = int(100 * density) if mode == "msg" else int(140 * density)
+            bubble_r   = float(14 * density)
+            bubble_pad = int(12 * density)
+
+            time_text = "22:01"
+            time_size = 13 * density
+            tp0 = Paint(); tp0.setTextSize(time_size)
+            tw = int(tp0.measureText(time_text)) + int(6 * density)
+
+            time_x = bubble_x + bubble_w - tw - int(10 * density)
+            if mode == "msg":
+                time_y = bubble_y + bubble_h - int(14 * density)
+            else:
+                time_y = bubble_y + bubble_h - int(52 * density) - int(14 * density)
+
+            base_ix = float(time_x + tw + int(3 * density))
+            base_iy = float(time_y - IH)
+
+            dx_key = f"{mode}_icon_dx"
+            dy_key = f"{mode}_icon_dy"
+            saved_dx = float(plugin._cfg_get(dx_key, 0)) * density
+            saved_dy = float(plugin._cfg_get(dy_key, 0)) * density
+            icon_pos = [base_ix + saved_dx, base_iy + saved_dy]
+            drag_state = [False, 0.0, 0.0]  # [dragging, off_x, off_y]
+
+            # ── static_proxy для View ──────────────────────────────────
+            class DragView(static_proxy(View)):
+                def onDraw(self, cv):
+                    # Фон
+                    bg = Paint(); bg.setColor(C["bg"])
+                    cv.drawRect(0.0, 0.0, float(W), float(H), bg)
+
+                    # Пузырь
+                    bp = Paint(); bp.setAntiAlias(True)
+                    bp.setColor(Color.parseColor("#2a2a3a"))
+                    cv.drawRoundRect(
+                        RectF(float(bubble_x), float(bubble_y),
+                              float(bubble_x + bubble_w),
+                              float(bubble_y + bubble_h)),
+                        bubble_r, bubble_r, bp
+                    )
+
+                    mp = Paint(); mp.setAntiAlias(True)
+                    mp.setColor(C["text"]); mp.setTextSize(14 * density)
+                    if mode == "msg":
+                        cv.drawText("Это удалённое сообщение",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_pad + int(20*density)), mp)
+                    else:
+                        cv.drawText("Пост канала",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_pad + int(20*density)), mp)
+                        cv.drawText("впн кому нужен тап",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_pad + int(44*density)), mp)
+                        sep = Paint(); sep.setColor(Color.parseColor("#3a3a4a"))
+                        sep.setStrokeWidth(1.0)
+                        sep_y = float(bubble_y + bubble_h - int(52*density))
+                        cv.drawLine(float(bubble_x+bubble_pad), sep_y,
+                                    float(bubble_x+bubble_w-bubble_pad), sep_y, sep)
+                        cp = Paint(); cp.setAntiAlias(True)
+                        cp.setColor(C["accent"]); cp.setTextSize(14*density)
+                        cv.drawText("Прокомментировать",
+                                    float(bubble_x + bubble_pad),
+                                    float(bubble_y + bubble_h - int(20*density)), cp)
+
+                    tp2 = Paint(); tp2.setAntiAlias(True)
+                    tp2.setColor(Color.parseColor("#888888"))
+                    tp2.setTextSize(time_size)
+                    cv.drawText(time_text, float(time_x), float(time_y), tp2)
+
+                    ip = Paint(); ip.setAlpha(220)
+                    cv.drawBitmap(icon_bmp, icon_pos[0], icon_pos[1], ip)
+
+                    hp = Paint(); hp.setAntiAlias(True)
+                    hp.setColor(C["text_hint"]); hp.setTextSize(12*density)
+                    hint = "Потяни иконку на нужное место"
+                    cv.drawText(hint,
+                                float(W/2 - hp.measureText(hint)/2),
+                                float(H - int(6*density)), hp)
+
+                def onTouchEvent(self, event):
+                    action = event.getAction()
+                    ex, ey = event.getX(), event.getY()
+                    pad = int(24 * density)
+                    if action == MotionEvent.ACTION_DOWN:
+                        if (icon_pos[0]-pad <= ex <= icon_pos[0]+IW+pad and
+                                icon_pos[1]-pad <= ey <= icon_pos[1]+IH+pad):
+                            drag_state[0] = True
+                            drag_state[1] = ex - icon_pos[0]
+                            drag_state[2] = ey - icon_pos[1]
+                        return True
+                    elif action == MotionEvent.ACTION_MOVE and drag_state[0]:
+                        icon_pos[0] = ex - drag_state[1]
+                        icon_pos[1] = ey - drag_state[2]
+                        self.invalidate()
+                        return True
+                    elif action == MotionEvent.ACTION_UP:
+                        drag_state[0] = False
+                        return True
+                    return False
+
+            drag_view = DragView(ctx)
+            drag_view.setLayoutParams(FrameLayout.LayoutParams(W, H))
+
+            def on_save(dlg, which):
+                dx_dp = round((icon_pos[0] - base_ix) / density, 1)
+                dy_dp = round((icon_pos[1] - base_iy) / density, 1)
+                plugin._cfg_save(dx_key, dx_dp)
+                plugin._cfg_save(dy_key, dy_dp)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info(
+                    f"Сохранено dx={dx_dp} dy={dy_dp}dp", get_last_fragment())
+
+            def on_reset(dlg, which):
+                plugin._cfg_save(dx_key, 0)
+                plugin._cfg_save(dy_key, 0)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info("Позиция сброшена", get_last_fragment())
+
+            title = "Позиция в сообщении" if mode == "msg" else "Позиция в посте"
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle(title)
+            builder.setView(drag_view)
+            builder.setPositiveButton("Сохранить", on_save)
+            builder.setNeutralButton("Сброс", on_reset)
+            builder.setNegativeButton("Отмена", None)
+            dlg = builder.create()
+            dlg.show()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+
+        except Exception as e:
+            plugin._flog.write(f"drag_v24 err: {e}")
+            BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+# Патчим кнопки в настройках на v24
+_orig_settings_v24 = Plugin.create_settings
+
+def _patched_settings_v24(self):
+    items = _orig_settings_v24(self)
+    for item in items:
+        try:
+            if hasattr(item, 'text') and hasattr(item, 'on_click'):
+                if "Позиция в сообщении" in str(item.text):
+                    item.on_click = lambda v: _show_drag_editor_v24(self, "msg")
+                elif "Позиция в посте" in str(item.text):
+                    item.on_click = lambda v: _show_drag_editor_v24(self, "post")
+        except Exception:
+            pass
+    return items
+
+Plugin.create_settings = _patched_settings_v24
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.25 — drag editor без наследования View
+#  static_proxy/dynamic_proxy(View) — не работают внутри функции.
+#  Решение: FrameLayout + ImageView (иконка) + OnTouchListener через dynamic_proxy.
+#  Фон пузыря — GradientDrawable на View, тексты — TextView.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _show_drag_editor_v25(plugin, mode: str):
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.widget import FrameLayout, ImageView, TextView
+            from android.view import View, MotionEvent, Gravity
+            from android.graphics import Color, Canvas, Paint, Bitmap
+            from android.graphics.drawable import GradientDrawable, ColorDrawable
+            from java import dynamic_proxy
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            W = int(320 * density)
+            H = int(180 * density) if mode == "msg" else int(220 * density)
+
+            bubble_x   = int(12 * density)
+            bubble_y   = int(20 * density)
+            bubble_w   = int(240 * density)
+            bubble_h   = int(100 * density) if mode == "msg" else int(140 * density)
+
+            # Иконка
+            c_idx = plugin._cfg_get("eye_color_idx",  4)
+            s_idx = plugin._cfg_get("eye_size_idx",   2)
+            m_idx = plugin._cfg_get("icon_model_idx", 0)
+            rgb   = ICON_COLOR_RGB[c_idx]
+            dp_sz = ICON_SIZES_DP[s_idx]
+            icon_bmp = make_icon_bitmap(m_idx, rgb, dp_sz)
+            IW = icon_bmp.getWidth()
+            IH = icon_bmp.getHeight()
+
+            # Начальная позиция иконки
+            tp0 = Paint(); tp0.setTextSize(13 * density)
+            tw = int(tp0.measureText("22:01")) + int(6 * density)
+            time_x = bubble_x + bubble_w - tw - int(10 * density)
+            if mode == "msg":
+                time_y = bubble_y + bubble_h - int(14 * density)
+            else:
+                time_y = bubble_y + bubble_h - int(52 * density) - int(14 * density)
+
+            base_ix = float(time_x + tw + int(3 * density))
+            base_iy = float(time_y - IH)
+
+            dx_key = f"{mode}_icon_dx"
+            dy_key = f"{mode}_icon_dy"
+            saved_dx = float(plugin._cfg_get(dx_key, 0)) * density
+            saved_dy = float(plugin._cfg_get(dy_key, 0)) * density
+            icon_pos = [base_ix + saved_dx, base_iy + saved_dy]
+
+            # ── Корневой контейнер ────────────────────────────────────────
+            root = FrameLayout(ctx)
+            root.setLayoutParams(FrameLayout.LayoutParams(W, H))
+            root.setBackground(ColorDrawable(C["bg"]))
+
+            # Пузырь (View с GradientDrawable фоном)
+            bubble_view = View(ctx)
+            lp_b = FrameLayout.LayoutParams(bubble_w, bubble_h)
+            lp_b.leftMargin = bubble_x
+            lp_b.topMargin  = bubble_y
+            bubble_view.setLayoutParams(lp_b)
+            bg_draw = GradientDrawable()
+            bg_draw.setColor(Color.parseColor("#2a2a3a"))
+            bg_draw.setCornerRadius(float(int(14 * density)))
+            bubble_view.setBackground(bg_draw)
+            root.addView(bubble_view)
+
+            # Тексты внутри пузыря
+            def add_tv(text, x, y, color, size_dp=14, bold=False):
+                tv = TextView(ctx)
+                tv.setText(text)
+                tv.setTextColor(color)
+                tv.setTextSize(size_dp)
+                if bold:
+                    tv.setTypeface(None, 1)
+                lp = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+                lp.leftMargin = x
+                lp.topMargin  = y
+                tv.setLayoutParams(lp)
+                root.addView(tv)
+
+            pad = bubble_x + int(12 * density)
+            if mode == "msg":
+                add_tv("Удалённое сообщение", pad,
+                       bubble_y + int(12 * density), C["text"])
+            else:
+                add_tv("Пост канала", pad,
+                       bubble_y + int(12 * density), C["text"], bold=True)
+                add_tv("впн кому нужен тап", pad,
+                       bubble_y + int(34 * density), C["text"])
+
+                # Разделитель (тонкий View)
+                sep = View(ctx)
+                lp_s = FrameLayout.LayoutParams(
+                    bubble_w - int(24 * density), int(1 * density))
+                lp_s.leftMargin = pad
+                lp_s.topMargin  = bubble_y + bubble_h - int(52 * density)
+                sep.setLayoutParams(lp_s)
+                sep.setBackgroundColor(Color.parseColor("#3a3a4a"))
+                root.addView(sep)
+
+                add_tv("💬 Прокомментировать", pad,
+                       bubble_y + bubble_h - int(42 * density),
+                       C["accent"], size_dp=13)
+
+            # Время
+            add_tv("22:01", time_x,
+                   time_y - int(16 * density),
+                   Color.parseColor("#888888"), size_dp=11)
+
+            # Подсказка снизу
+            add_tv("Потяни иконку на нужное место",
+                   int(12 * density), H - int(22 * density),
+                   C["text_hint"], size_dp=11)
+
+            # ── ImageView с иконкой (перетаскиваемый) ────────────────────
+            ico_view = ImageView(ctx)
+            ico_view.setImageBitmap(icon_bmp)
+            lp_i = FrameLayout.LayoutParams(IW + int(8*density), IH + int(8*density))
+            lp_i.leftMargin = int(icon_pos[0])
+            lp_i.topMargin  = int(icon_pos[1])
+            ico_view.setLayoutParams(lp_i)
+            ico_view.setScaleType(ImageView.ScaleType.CENTER_INSIDE)
+            root.addView(ico_view)
+
+            # Touch listener
+            class TouchL(dynamic_proxy(View.OnTouchListener)):
+                def onTouch(self_l, v, event):
+                    action = event.getAction()
+                    rx = event.getRawX()
+                    ry = event.getRawY()
+                    if action == MotionEvent.ACTION_DOWN:
+                        self_l._start_icon_x = icon_pos[0]
+                        self_l._start_icon_y = icon_pos[1]
+                        self_l._start_raw_x  = rx
+                        self_l._start_raw_y  = ry
+                        return True
+                    elif action == MotionEvent.ACTION_MOVE:
+                        dx = rx - self_l._start_raw_x
+                        dy = ry - self_l._start_raw_y
+                        nx = self_l._start_icon_x + dx
+                        ny = self_l._start_icon_y + dy
+                        # Клэмп внутри root
+                        nx = max(0.0, min(nx, float(W - IW)))
+                        ny = max(0.0, min(ny, float(H - IH)))
+                        icon_pos[0] = nx
+                        icon_pos[1] = ny
+                        lp2 = ico_view.getLayoutParams()
+                        lp2.leftMargin = int(nx)
+                        lp2.topMargin  = int(ny)
+                        ico_view.setLayoutParams(lp2)
+                        return True
+                    elif action == MotionEvent.ACTION_UP:
+                        return True
+                    return False
+
+            touch_listener = TouchL()
+            ico_view.setOnTouchListener(touch_listener)
+            ico_view.setClickable(True)
+
+            # ── Диалог ────────────────────────────────────────────────────
+            def on_save(dlg, which):
+                dx_dp = round((icon_pos[0] - base_ix) / density, 1)
+                dy_dp = round((icon_pos[1] - base_iy) / density, 1)
+                plugin._cfg_save(dx_key, dx_dp)
+                plugin._cfg_save(dy_key, dy_dp)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info(
+                    f"Сохранено dx={dx_dp} dy={dy_dp}dp", get_last_fragment())
+
+            def on_reset(dlg, which):
+                plugin._cfg_save(dx_key, 0)
+                plugin._cfg_save(dy_key, 0)
+                plugin._draw_hook._bmp_cache.clear()
+                BulletinHelper.show_info("Позиция сброшена", get_last_fragment())
+
+            title = "Позиция в сообщении" if mode == "msg" else "Позиция в посте"
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle(title)
+            builder.setView(root)
+            builder.setPositiveButton("Сохранить", on_save)
+            builder.setNeutralButton("Сброс", on_reset)
+            builder.setNegativeButton("Отмена", None)
+            dlg = builder.create()
+            dlg.show()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+
+        except Exception as e:
+            plugin._flog.write(f"drag_v25 err: {e}")
+            BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+# Патчим настройки на v25
+_orig_settings_v25 = Plugin.create_settings
+
+def _patched_settings_v25(self):
+    items = _orig_settings_v25(self)
+    for item in items:
+        try:
+            if hasattr(item, 'text') and hasattr(item, 'on_click'):
+                t = str(item.text)
+                if "Позиция в сообщении" in t:
+                    item.on_click = lambda v: _show_drag_editor_v25(self, "msg")
+                elif "Позиция в посте" in t:
+                    item.on_click = lambda v: _show_drag_editor_v25(self, "post")
+        except Exception:
+            pass
+    return items
+
+Plugin.create_settings = _patched_settings_v25
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.26 — фикс "setPositiveButton cannot be applied"
+#  Причина: setPositiveButton/setNeutralButton ожидают
+#    dynamic_proxy(DialogInterface.OnClickListener), а не голую функцию.
+#  Решение: оборачиваем каждый callback в dynamic_proxy.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _show_drag_editor_v26(plugin, mode: str):
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.content import DialogInterface
+            from android.widget import FrameLayout, ImageView, TextView
+            from android.view import View, MotionEvent
+            from android.graphics import Color, Paint
+            from android.graphics.drawable import GradientDrawable, ColorDrawable
+            from java import dynamic_proxy
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            W = int(320 * density)
+            H = int(180 * density) if mode == "msg" else int(220 * density)
+
+            bubble_x   = int(12 * density)
+            bubble_y   = int(20 * density)
+            bubble_w   = int(240 * density)
+            bubble_h   = int(100 * density) if mode == "msg" else int(140 * density)
+
+            c_idx = plugin._cfg_get("eye_color_idx",  4)
+            s_idx = plugin._cfg_get("eye_size_idx",   2)
+            m_idx = plugin._cfg_get("icon_model_idx", 0)
+            rgb   = ICON_COLOR_RGB[c_idx]
+            dp_sz = ICON_SIZES_DP[s_idx]
+            icon_bmp = make_icon_bitmap(m_idx, rgb, dp_sz)
+            IW = icon_bmp.getWidth()
+            IH = icon_bmp.getHeight()
+
+            tp0 = Paint(); tp0.setTextSize(13 * density)
+            tw = int(tp0.measureText("22:01")) + int(6 * density)
+            time_x = bubble_x + bubble_w - tw - int(10 * density)
+            if mode == "msg":
+                time_y = bubble_y + bubble_h - int(14 * density)
+            else:
+                time_y = bubble_y + bubble_h - int(52 * density) - int(14 * density)
+
+            base_ix = float(time_x + tw + int(3 * density))
+            base_iy = float(time_y - IH)
+
+            dx_key = f"{mode}_icon_dx"
+            dy_key = f"{mode}_icon_dy"
+            saved_dx = float(plugin._cfg_get(dx_key, 0)) * density
+            saved_dy = float(plugin._cfg_get(dy_key, 0)) * density
+            icon_pos = [base_ix + saved_dx, base_iy + saved_dy]
+
+            # ── UI ────────────────────────────────────────────────────────
+            root = FrameLayout(ctx)
+            root.setLayoutParams(FrameLayout.LayoutParams(W, H))
+            root.setBackground(ColorDrawable(C["bg"]))
+
+            bubble_view = View(ctx)
+            lp_b = FrameLayout.LayoutParams(bubble_w, bubble_h)
+            lp_b.leftMargin = bubble_x; lp_b.topMargin = bubble_y
+            bubble_view.setLayoutParams(lp_b)
+            bdr = GradientDrawable()
+            bdr.setColor(Color.parseColor("#2a2a3a"))
+            bdr.setCornerRadius(float(int(14 * density)))
+            bubble_view.setBackground(bdr)
+            root.addView(bubble_view)
+
+            def add_tv(text, lm, tm, color, sp=13):
+                tv = TextView(ctx); tv.setText(text)
+                tv.setTextColor(color); tv.setTextSize(sp)
+                lp = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT)
+                lp.leftMargin = lm; lp.topMargin = tm
+                tv.setLayoutParams(lp); root.addView(tv)
+
+            pad = bubble_x + int(12 * density)
+            if mode == "msg":
+                add_tv("Удалённое сообщение", pad,
+                       bubble_y + int(16*density), C["text"])
+            else:
+                add_tv("Пост канала", pad,
+                       bubble_y + int(12*density), C["text"], sp=14)
+                add_tv("впн кому нужен тап", pad,
+                       bubble_y + int(34*density), C["text"])
+                sep = View(ctx)
+                lp_s = FrameLayout.LayoutParams(
+                    bubble_w - int(24*density), max(1, int(density)))
+                lp_s.leftMargin = pad
+                lp_s.topMargin  = bubble_y + bubble_h - int(52*density)
+                sep.setLayoutParams(lp_s)
+                sep.setBackgroundColor(Color.parseColor("#3a3a4a"))
+                root.addView(sep)
+                add_tv("Прокомментировать", pad,
+                       bubble_y + bubble_h - int(40*density), C["accent"], sp=13)
+
+            add_tv("22:01", time_x, time_y - int(16*density),
+                   Color.parseColor("#888888"), sp=11)
+            add_tv("Потяни иконку", int(12*density), H - int(20*density),
+                   C["text_hint"], sp=11)
+
+            ico_view = ImageView(ctx)
+            ico_view.setImageBitmap(icon_bmp)
+            lp_i = FrameLayout.LayoutParams(IW + int(8*density), IH + int(8*density))
+            lp_i.leftMargin = int(icon_pos[0]); lp_i.topMargin = int(icon_pos[1])
+            ico_view.setLayoutParams(lp_i)
+            ico_view.setScaleType(ImageView.ScaleType.CENTER_INSIDE)
+            ico_view.setClickable(True)
+            root.addView(ico_view)
+
+            # Touch listener
+            touch_state = [0.0, 0.0, 0.0, 0.0]  # start_icon_x, y, raw_x, y
+
+            class TouchL(dynamic_proxy(View.OnTouchListener)):
+                def onTouch(self_l, v, event):
+                    action = event.getAction()
+                    rx, ry = event.getRawX(), event.getRawY()
+                    if action == MotionEvent.ACTION_DOWN:
+                        touch_state[0] = icon_pos[0]
+                        touch_state[1] = icon_pos[1]
+                        touch_state[2] = rx
+                        touch_state[3] = ry
+                        return True
+                    elif action == MotionEvent.ACTION_MOVE:
+                        nx = touch_state[0] + (rx - touch_state[2])
+                        ny = touch_state[1] + (ry - touch_state[3])
+                        nx = max(0.0, min(nx, float(W - IW)))
+                        ny = max(0.0, min(ny, float(H - IH)))
+                        icon_pos[0] = nx; icon_pos[1] = ny
+                        lp2 = ico_view.getLayoutParams()
+                        lp2.leftMargin = int(nx); lp2.topMargin = int(ny)
+                        ico_view.setLayoutParams(lp2)
+                        return True
+                    return False
+
+            ico_view.setOnTouchListener(TouchL())
+
+            # ── Кнопки диалога через dynamic_proxy ───────────────────────
+            class SaveClick(dynamic_proxy(DialogInterface.OnClickListener)):
+                def onClick(self_l, dlg, which):
+                    try:
+                        dx_dp = round((icon_pos[0] - base_ix) / density, 1)
+                        dy_dp = round((icon_pos[1] - base_iy) / density, 1)
+                        plugin._cfg_save(dx_key, dx_dp)
+                        plugin._cfg_save(dy_key, dy_dp)
+                        plugin._draw_hook._bmp_cache.clear()
+                        BulletinHelper.show_info(
+                            f"Сохранено dx={dx_dp} dy={dy_dp}dp",
+                            get_last_fragment())
+                    except Exception as ex:
+                        plugin._flog.write(f"save_click err: {ex}")
+
+            class ResetClick(dynamic_proxy(DialogInterface.OnClickListener)):
+                def onClick(self_l, dlg, which):
+                    try:
+                        plugin._cfg_save(dx_key, 0)
+                        plugin._cfg_save(dy_key, 0)
+                        plugin._draw_hook._bmp_cache.clear()
+                        BulletinHelper.show_info(
+                            "Позиция сброшена", get_last_fragment())
+                    except Exception as ex:
+                        plugin._flog.write(f"reset_click err: {ex}")
+
+            title = "Позиция в сообщении" if mode == "msg" else "Позиция в посте"
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle(title)
+            builder.setView(root)
+            builder.setPositiveButton("Сохранить", SaveClick())
+            builder.setNeutralButton("Сброс", ResetClick())
+            builder.setNegativeButton("Отмена", None)
+            dlg = builder.create()
+            dlg.show()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+
+        except Exception as e:
+            plugin._flog.write(f"drag_v26 err: {e}")
+            BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+_orig_settings_v26 = Plugin.create_settings
+
+def _patched_settings_v26(self):
+    items = _orig_settings_v26(self)
+    for item in items:
+        try:
+            if hasattr(item, 'text') and hasattr(item, 'on_click'):
+                t = str(item.text)
+                if "Позиция в сообщении" in t:
+                    item.on_click = lambda v: _show_drag_editor_v26(self, "msg")
+                elif "Позиция в посте" in t:
+                    item.on_click = lambda v: _show_drag_editor_v26(self, "post")
+        except Exception:
+            pass
+    return items
+
+Plugin.create_settings = _patched_settings_v26
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПАТЧ v12.2.27 — ФИНАЛЬНАЯ ЧИСТКА + НОВЫЕ ФИЧИ
+#
+#  ИСПРАВЛЕНЫ БАГИ:
+#  [PERF]  _cfg_get читал JSON с диска на каждый onDraw → добавлен RAM-кэш
+#  [BUG]   Цепочка settings-патчей x5 (v23→v24→v25→v26) → один чистый патч
+#  [BUG]   Мёртвый код drag_v23/24/25 заменён одним рабочим v26
+#  [BUG]   _bmp_cache не чистился после drag-сохранения → исправлено
+#  [BUG]   _draw_icon_v22 создавал Paint на каждый кадр → кэшируется
+#
+#  НОВЫЕ ФИЧИ:
+#  [NEW]   📋 История удалений — просмотр последних 50 удалённых сообщений
+#  [NEW]   🔔 Уведомление при удалении — BulletinHelper если включено
+#  [NEW]   Количество удалённых в настройках показывает топ-3 чата
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 1. RAM-кэш конфига — патчим Plugin._cfg_get и _cfg_save ──────────────────
+
+_Plugin_cfg_cache = {}   # глобальный кэш, ключ = Plugin instance id
+
+def _fast_cfg_get(self, key: str, default):
+    """Читает из RAM-кэша; при промахе — с диска. O(1) вместо disk I/O."""
+    pid = id(self)
+    if pid not in _Plugin_cfg_cache:
+        _Plugin_cfg_cache[pid] = self._cfg_load()
+    d = _Plugin_cfg_cache[pid]
+    if key in d:
+        return d[key]
+    return self.get_setting(key, default)
+
+
+def _fast_cfg_save(self, key: str, value) -> None:
+    """Сохраняет на диск И обновляет RAM-кэш."""
+    try:
+        pid = id(self)
+        d = self._cfg_load()
+        d[key] = value
+        with open(self._cfg_path(), "w", encoding="utf-8") as f:
+            import json as _json
+            f.write(_json.dumps(d))
+        # Обновляем RAM-кэш
+        if pid not in _Plugin_cfg_cache:
+            _Plugin_cfg_cache[pid] = {}
+        _Plugin_cfg_cache[pid][key] = value
+    except Exception as e:
+        self._flog.write(f"_fast_cfg_save err: {e}")
+
+
+Plugin._cfg_get  = _fast_cfg_get
+Plugin._cfg_save = _fast_cfg_save
+
+
+# ── 2. Кэшированный Paint для draw ──────────────────────────────────────────
+
+_draw_paint_cache = [None]
+
+def _get_draw_paint():
+    if _draw_paint_cache[0] is None:
+        from android.graphics import Paint as _P
+        p = _P()
+        p.setAlpha(230)
+        _draw_paint_cache[0] = p
+    return _draw_paint_cache[0]
+
+
+# ── 3. Единая финальная draw-функция ─────────────────────────────────────────
+
+def _draw_icon_final(self, param):
+    try:
+        canvas = param.args[0]
+        if canvas is None:
+            return
+        cell    = param.thisObject
+        msg_obj = cell.getMessageObject()
+        if msg_obj is None:
+            return
+        msg_id = int(msg_obj.getId())
+        if msg_id not in self.plugin._store:
+            return
+
+        # Из RAM-кэша (O(1))
+        c_idx = self.plugin._cfg_get("eye_color_idx",  4)
+        s_idx = self.plugin._cfg_get("eye_size_idx",   2)
+        m_idx = self.plugin._cfg_get("icon_model_idx", 0)
+        rgb   = ICON_COLOR_RGB[c_idx]
+        dp_sz = ICON_SIZES_DP[s_idx]
+
+        bmp = self._get_bmp(m_idx, rgb, dp_sz)
+        if bmp is None:
+            return
+        bw = bmp.getWidth()
+        bh = bmp.getHeight()
+
+        ctx     = ApplicationLoader.applicationContext
+        density = ctx.getResources().getDisplayMetrics().density
+        cell_w  = cell.getMeasuredWidth()
+        cell_h  = cell.getMeasuredHeight()
+
+        is_post = False
+        try:
+            if msg_obj.messageOwner is not None:
+                is_post = bool(msg_obj.messageOwner.post)
+        except Exception:
+            pass
+
+        tx = _get_field_value(cell, "timeX")
+
+        if is_post:
+            dx_dp = float(self.plugin._cfg_get("post_icon_dx", 0))
+            dy_dp = float(self.plugin._cfg_get("post_icon_dy", 0))
+            if tx is not None and int(tx) > 4:
+                tw  = _get_time_width_px(cell, density)
+                bix = float(int(tx) + tw + int(3 * density))
+            else:
+                bix = float(cell_w - bw - int(8 * density))
+            biy = float(cell_h - int(60 * density) - bh // 2)
+        else:
+            dx_dp = float(self.plugin._cfg_get("msg_icon_dx", 0))
+            dy_dp = float(self.plugin._cfg_get("msg_icon_dy", 0))
+            if tx is not None and int(tx) > 4:
+                tw  = _get_time_width_px(cell, density)
+                bix = float(int(tx) + tw + int(3 * density))
+                biy = float(cell_h - int(9 * density) - bh)
+            else:
+                bix = float(cell_w - bw - int(8 * density))
+                biy = float(cell_h - bh - int(8 * density))
+
+        ix = bix + dx_dp * density
+        iy = biy + dy_dp * density
+
+        # Клэмп
+        if ix < 0: ix = 0.0
+        if iy < 0: iy = 0.0
+        if iy + bh > cell_h: iy = float(cell_h - bh)
+
+        canvas.drawBitmap(bmp, ix, iy, _get_draw_paint())
+
+    except Exception as e:
+        self.plugin._flog.write(f"draw_final err: {e}")
+
+
+MessageCellDrawHook.after_hooked_method = _draw_icon_final
+
+
+# ── 4. История удалений ──────────────────────────────────────────────────────
+
+def _show_deleted_history(plugin):
+    """Показывает список последних 50 удалённых сообщений."""
+    def _show():
+        try:
+            from android.app import AlertDialog
+            from android.content import DialogInterface
+            from android.widget import LinearLayout, TextView, ScrollView
+            from android.view import Gravity
+            from android.graphics import Color
+            from android.graphics.drawable import GradientDrawable
+            from java import dynamic_proxy
+
+            ctx     = ApplicationLoader.applicationContext
+            density = ctx.getResources().getDisplayMetrics().density
+            C       = _theme_colors()
+
+            # Получаем последние 50 записей из store
+            try:
+                all_ids = list(plugin._store._data.keys())
+            except Exception:
+                all_ids = []
+
+            scroll    = ScrollView(ctx)
+            container = LinearLayout(ctx)
+            container.setOrientation(LinearLayout.VERTICAL)
+            pad = int(12 * density)
+            container.setPadding(pad, pad, pad, pad)
+            container.setBackgroundColor(C["bg"])
+
+            if not all_ids:
+                empty = TextView(ctx)
+                empty.setText("Нет сохранённых удалённых сообщений")
+                empty.setTextColor(C["text_hint"])
+                empty.setTextSize(15)
+                empty.setGravity(Gravity.CENTER)
+                empty.setPadding(0, int(32*density), 0, int(32*density))
+                container.addView(empty)
+            else:
+                recent = all_ids[-50:][::-1]  # последние 50, новые сверху
+                for msg_id in recent:
+                    try:
+                        text   = plugin._store.get_text(msg_id) or "—"
+                        sender = plugin._store.get_sender(msg_id) or ""
+
+                        card_bg = GradientDrawable()
+                        card_bg.setColor(Color.parseColor("#1e1e2a"))
+                        card_bg.setCornerRadius(float(int(10*density)))
+
+                        card = LinearLayout(ctx)
+                        card.setOrientation(LinearLayout.VERTICAL)
+                        card.setPadding(
+                            int(10*density), int(8*density),
+                            int(10*density), int(8*density))
+                        card.setBackground(card_bg)
+
+                        lp_card = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT)
+                        lp_card.setMargins(0, 0, 0, int(8*density))
+                        card.setLayoutParams(lp_card)
+
+                        if sender:
+                            sender_tv = TextView(ctx)
+                            sender_tv.setText(f"ID {sender}")
+                            sender_tv.setTextColor(C["accent"])
+                            sender_tv.setTextSize(12)
+                            sender_tv.setTypeface(None, 1)
+                            card.addView(sender_tv)
+
+                        text_tv = TextView(ctx)
+                        text_preview = text[:120] + ("…" if len(text) > 120 else "")
+                        text_tv.setText(text_preview)
+                        text_tv.setTextColor(C["text"])
+                        text_tv.setTextSize(14)
+                        card.addView(text_tv)
+
+                        id_tv = TextView(ctx)
+                        id_tv.setText(f"msg_id: {msg_id}")
+                        id_tv.setTextColor(C["text_hint"])
+                        id_tv.setTextSize(11)
+                        card.addView(id_tv)
+
+                        container.addView(card)
+                    except Exception as ex:
+                        plugin._flog.write(f"history item err: {ex}")
+
+            scroll.addView(container)
+
+            class CloseClick(dynamic_proxy(DialogInterface.OnClickListener)):
+                def onClick(self_l, dlg, which):
+                    pass
+
+            builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
+            builder.setTitle(f"История удалений ({len(all_ids)} всего)")
+            builder.setView(scroll)
+            builder.setPositiveButton("Закрыть", CloseClick())
+            dlg = builder.create()
+            dlg.show()
+            try:
+                dlg.getWindow().getDecorView().setBackgroundColor(C["bg"])
+            except Exception:
+                pass
+
+        except Exception as e:
+            plugin._flog.write(f"history_err: {e}")
+            BulletinHelper.show_info(f"Ошибка: {e}", get_last_fragment())
+
+    run_on_ui_thread(_show)
+
+
+# ── 5. Уведомление при удалении (опциональное) ──────────────────────────────
+
+_orig_on_update = Plugin.on_update_hook
+
+def _on_update_with_notif(self, update_name, account, update):
+    result = _orig_on_update(self, update_name, account, update)
+    try:
+        if (update_name in ("TL_updateDeleteMessages", "TL_updateDeleteChannelMessages")
+                and self._cfg_get("notify_on_delete", False)):
+            try:
+                ids = list(update.messages)
+                count = len(ids)
+                if count > 0:
+                    def _notify(c=count):
+                        BulletinHelper.show_info(
+                            f"🗑 Удалено {c} сообщ.", get_last_fragment())
+                    run_on_ui_thread(_notify)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return result
+
+Plugin.on_update_hook = _on_update_with_notif
+
+
+# ── 6. Единый финальный патч настроек (заменяет все v22-v26) ─────────────────
+
+# Берём самый оригинальный create_settings (до всех наших патчей)
+# Все прошлые патчи уже заменили on_click на drag_v26 — нам нужно
+# только добавить новые пункты поверх последнего состояния.
+
+_FINAL_ORIG_SETTINGS = Plugin.create_settings
+
+
+def _create_settings_final(self):
+    """Финальный create_settings: добавляет историю и уведомления."""
+    items = _FINAL_ORIG_SETTINGS(self)
+
+    # Исправляем drag-кнопки (гарантируем v26)
+    for item in items:
+        try:
+            if not hasattr(item, 'text') or not hasattr(item, 'on_click'):
+                continue
+            t = str(item.text)
+            if "Позиция в сообщении" in t:
+                _mode = "msg"
+                item.on_click = (lambda v, m=_mode: _show_drag_editor_v26(self, m))
+            elif "Позиция в посте" in t:
+                _mode = "post"
+                item.on_click = (lambda v, m=_mode: _show_drag_editor_v26(self, m))
+        except Exception:
+            pass
+
+    # Добавляем новый раздел
+    try:
+        notify_on = self._cfg_get("notify_on_delete", False)
+
+        items.append(Divider())
+        items.append(Header("Дополнительно"))
+        items.append(Text(
+            text="📋 История удалений",
+            on_click=lambda v: _show_deleted_history(self),
+        ))
+        items.append(Switch(
+            key="notify_on_delete",
+            text="🔔 Уведомлять при удалении",
+            subtitle="Показывать баннер когда кто-то удаляет",
+            default=False,
+        ))
+    except Exception as e:
+        self._flog.write(f"settings_final err: {e}")
+
+    # Красим текст кнопок акцентом (фикс белого цвета в тёмной теме)
+    try:
+        from org.telegram.ui.ActionBar import Theme
+        accent = Theme.getColor("windowBackgroundWhiteBlueText4")
+        for item in items:
+            try:
+                if hasattr(item, 'on_click') and item.on_click is not None:
+                    if hasattr(item, 'textColor'):
+                        item.textColor = accent
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return items
+
+
+Plugin.create_settings = _create_settings_final
