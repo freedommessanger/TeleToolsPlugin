@@ -32,12 +32,17 @@ ICON_COLOR_RGB = [
 ]
 
 ICON_SIZES_DP    = [10, 12, 14, 16, 18]
-ICON_MODEL_NAMES = ["👁  Глаз","🗑  Корзина","👻  Призрак","❤️  Сердце","⭐  Звезда","💀  Череп","🔥  Огонь"]
+ICON_MODEL_NAMES = ["Глаз", "Корзина", "Призрак", "Сердце", "Звезда", "Череп", "Огонь"]
 
-EYE_COLOR_NAMES = ICON_COLOR_NAMES
-EYE_COLOR_RGB   = ICON_COLOR_RGB
-EYE_SIZES_DP    = ICON_SIZES_DP
-EYE_PREFIX      = "👁 "
+EYE_COLOR_NAMES   = ICON_COLOR_NAMES
+EYE_COLOR_RGB     = ICON_COLOR_RGB
+EYE_SIZES_DP      = ICON_SIZES_DP
+EYE_PREFIX        = "[Удалено] "
+LEGACY_EYE_PREFIX = "👁 "
+
+
+def _has_deleted_prefix(text: str) -> bool:
+    return str(text).startswith(EYE_PREFIX) or str(text).startswith(LEGACY_EYE_PREFIX)
 
 from org.telegram.messenger import ApplicationLoader, MessagesController
 from android.content import ClipboardManager, ClipData
@@ -98,6 +103,10 @@ _SVG_SAVE = (
     "L19,21 A2,2 0 0,0 21,19 L21,7 Z "
     "M7,3 L7,8 L15,8 L15,3 "
     "M12,12 A3,3 0 1,0 12,18 A3,3 0 0,0 12,12 Z"
+)
+_SVG_COMMENT = (
+    "M4,5 A2,2 0 0,1 6,3 L18,3 A2,2 0 0,1 20,5 L20,14 "
+    "A2,2 0 0,1 18,16 L9,16 L5,20 L5.2,16 L6,16 A2,2 0 0,1 4,14 Z"
 )
 
 
@@ -570,13 +579,24 @@ class DeletedStore:
         base       = ApplicationLoader.applicationContext.getFilesDir().getAbsolutePath()
         self._path = os.path.join(base, "tele_tools_deleted.json")
         self._ids:   set  = set()
+        self._order: list = []
         self._texts: dict = {}   # {str(msg_id): {"text": ..., "sender": ...}}
         self._load()
+
+    def recent_ids(self, limit: int = 50) -> list:
+        """Возвращает последние N удалённых id в порядке удаления."""
+        if limit <= 0:
+            return []
+        if not self._order:
+            return sorted(self._ids)[-limit:]
+        return self._order[-limit:]
 
     def __contains__(self, item):
         return item in self._ids
 
     def add(self, msg_id: int, text: str = "", sender: str = ""):
+        if msg_id not in self._ids:
+            self._order.append(msg_id)
         self._ids.add(msg_id)
         if text:
             self._texts[str(msg_id)] = {"text": text, "sender": sender}
@@ -590,6 +610,7 @@ class DeletedStore:
 
     def clear(self):
         self._ids.clear()
+        self._order.clear()
         self._texts.clear()
         self._save()
 
@@ -601,28 +622,43 @@ class DeletedStore:
             if os.path.exists(self._path):
                 with open(self._path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self._ids   = set(int(x) for x in data.get("ids", []))
+                self._ids = set(int(x) for x in data.get("ids", []))
+                order_raw = data.get("order", [])
+                order = []
+                for x in order_raw:
+                    try:
+                        i = int(x)
+                        if i in self._ids and i not in order:
+                            order.append(i)
+                    except Exception:
+                        pass
+                if not order:
+                    order = sorted(self._ids)
+                self._order = order
                 self._texts = data.get("texts", {})
                 self._log.write(f"DeletedStore: loaded {len(self._ids)} ids")
             else:
-                self._ids   = set()
+                self._ids = set()
+                self._order = []
                 self._texts = {}
                 self._log.write("DeletedStore: starting fresh")
         except Exception as e:
-            self._ids   = set()
+            self._ids = set()
+            self._order = []
             self._texts = {}
             self._log.write(f"DeletedStore load err: {e}")
 
     def _save(self):
         try:
-            ids_list = sorted(self._ids)
-            if len(ids_list) > self.MAX_IDS:
-                ids_list = ids_list[-self.MAX_IDS:]
-                self._ids = set(ids_list)
-                keep_keys = set(str(i) for i in ids_list)
-                self._texts = {k: v for k, v in self._texts.items() if k in keep_keys}
+            self._order = [i for i in self._order if i in self._ids]
+            if len(self._order) > self.MAX_IDS:
+                self._order = self._order[-self.MAX_IDS:]
+            self._ids = set(self._order)
+            ids_list = list(self._order)
+            keep_keys = set(str(i) for i in ids_list)
+            self._texts = {k: v for k, v in self._texts.items() if k in keep_keys}
             with open(self._path, "w", encoding="utf-8") as f:
-                json.dump({"ids": ids_list, "texts": self._texts}, f, ensure_ascii=False)
+                json.dump({"ids": ids_list, "order": ids_list, "texts": self._texts}, f, ensure_ascii=False)
         except Exception as e:
             self._log.write(f"DeletedStore save err: {e}")
 
@@ -650,7 +686,7 @@ class MessageCellHook(MethodHook):
             try:
                 if owner and owner.message:
                     raw = str(owner.message)
-                    if not raw.startswith(EYE_PREFIX):
+                    if not _has_deleted_prefix(raw):
                         sender = ""
                         try:
                             fid = owner.from_id
@@ -670,13 +706,13 @@ class MessageCellHook(MethodHook):
             if msg_id not in self.plugin._store:
                 return
             current = str(owner.message) if owner and owner.message else ""
-            if not current.startswith(EYE_PREFIX):
+            if not _has_deleted_prefix(current):
                 if owner:
                     owner.message = EYE_PREFIX + current
             try:
                 mt = msg_obj.messageText
                 mt_str = str(mt) if mt is not None else current
-                if not mt_str.startswith(EYE_PREFIX):
+                if not _has_deleted_prefix(mt_str):
                     from android.text import SpannableString
                     msg_obj.messageText = SpannableString(EYE_PREFIX + mt_str)
             except Exception as e:
@@ -1135,7 +1171,7 @@ class Plugin(BasePlugin):
                 rgb   = ICON_COLOR_RGB[current_color_idx]
                 dp_sz = max(ICON_SIZES_DP[current_size_idx], 22)
 
-                MODEL_LABELS = ["Глаз","Корзина","Призрак","Сердце","Звезда","Череп","Огонь"]
+                MODEL_LABELS = ICON_MODEL_NAMES
                 dialog_ref = [None]
 
                 scroll    = ScrollView(ctx)
@@ -1179,7 +1215,7 @@ class Plugin(BasePlugin):
 
                     if idx == current_model_idx:
                         check_tv = TextView(ctx)
-                        check_tv.setText("\u2713"); check_tv.setTextSize(20)
+                        check_tv.setText("✓"); check_tv.setTextSize(18)
                         check_tv.setTextColor(Color.parseColor("#8774e1"))
                         check_tv.setTypeface(None, 1)
                         row.addView(check_tv)
@@ -1282,7 +1318,7 @@ class Plugin(BasePlugin):
 
                     if idx == current_color_idx:
                         check = TextView(ctx)
-                        check.setText("\u2713"); check.setTextSize(18)
+                        check.setText("✓"); check.setTextSize(17)
                         check.setTextColor(Color.parseColor("#8774e1"))
                         check.setTypeface(None, 1)
                         row.addView(check)
@@ -2322,7 +2358,7 @@ def _patched_show_model_picker(self):
             rgb   = ICON_COLOR_RGB[current_color_idx]
             dp_sz = max(ICON_SIZES_DP[current_size_idx], 22)
 
-            MODEL_LABELS = ["Глаз","Корзина","Призрак","Сердце","Звезда","Череп","Огонь"]
+            MODEL_LABELS = ICON_MODEL_NAMES
             dialog_ref = [None]
 
             root = LinearLayout(ctx)
@@ -2373,7 +2409,7 @@ def _patched_show_model_picker(self):
 
                 if idx == current_model_idx:
                     check_tv = TextView(ctx)
-                    check_tv.setText("\u2713"); check_tv.setTextSize(20)
+                    check_tv.setText("✓"); check_tv.setTextSize(18)
                     check_tv.setTextColor(C["accent"])
                     check_tv.setTypeface(None, 1)
                     row.addView(check_tv)
@@ -2499,7 +2535,7 @@ def _patched_show_color_preview(self):
 
                 if idx == current_color_idx:
                     check = TextView(ctx)
-                    check.setText("\u2713"); check.setTextSize(18)
+                    check.setText("✓"); check.setTextSize(17)
                     check.setTextColor(C["accent"])
                     check.setTypeface(None, 1)
                     row.addView(check)
@@ -3010,7 +3046,7 @@ def _show_drag_editor(plugin, mode: str):
                 # Кнопка "Прокомментировать"
                 cp = Paint(); cp.setAntiAlias(True)
                 cp.setColor(C["accent"]); cp.setTextSize(14 * density)
-                bg_cv.drawText("💬 Прокомментировать",
+                bg_cv.drawText("Прокомментировать",
                                float(bubble_x + bubble_pad),
                                float(bubble_y + bubble_h - int(22*density)), cp)
 
@@ -3124,11 +3160,15 @@ def _patched_create_settings_v22(self):
         ico_pos = self._ico(_SVG_WRENCH, "#8774e1")
 
         drag_msg  = Text(
-            text="📍 Позиция в сообщении",
+            text="Позиция в сообщении",
+            subtitle="Перетащи SVG-иконку в пузыре обычного сообщения",
+            icon=ico_pos,
             on_click=lambda v: _show_drag_editor(self, "msg"),
         )
         drag_post = Text(
-            text="📍 Позиция в посте",
+            text="Позиция в посте",
+            subtitle="Перетащи SVG-иконку в превью поста канала",
+            icon=ico_pos,
             on_click=lambda v: _show_drag_editor(self, "post"),
         )
 
@@ -3760,7 +3800,7 @@ def _show_drag_editor_v25(plugin, mode: str):
                 sep.setBackgroundColor(Color.parseColor("#3a3a4a"))
                 root.addView(sep)
 
-                add_tv("💬 Прокомментировать", pad,
+                add_tv("Прокомментировать", pad,
                        bubble_y + bubble_h - int(42 * density),
                        C["accent"], size_dp=13)
 
@@ -3975,6 +4015,15 @@ def _show_drag_editor_v26(plugin, mode: str):
                 root.addView(sep)
                 add_tv("Прокомментировать", pad,
                        bubble_y + bubble_h - int(40*density), C["accent"], sp=13)
+                comment_ico = ImageView(ctx)
+                comment_bmp = _make_svg_bitmap(_SVG_COMMENT, C["accent"], 14)
+                if comment_bmp is not None:
+                    comment_ico.setImageBitmap(comment_bmp)
+                    lp_c = FrameLayout.LayoutParams(int(16*density), int(16*density))
+                    lp_c.leftMargin = max(pad - int(20*density), int(8*density))
+                    lp_c.topMargin = bubble_y + bubble_h - int(42*density)
+                    comment_ico.setLayoutParams(lp_c)
+                    root.addView(comment_ico)
 
             add_tv("22:01", time_x, time_y - int(16*density),
                    Color.parseColor("#888888"), sp=11)
@@ -4189,26 +4238,39 @@ def _draw_icon_final(self, param):
             pass
 
         tx = _get_field_value(cell, "timeX")
+        ty = _get_field_value(cell, "timeY")
+        tl = _get_field_value(cell, "timeLayout")
 
         if is_post:
             dx_dp = float(self.plugin._cfg_get("post_icon_dx", 0))
             dy_dp = float(self.plugin._cfg_get("post_icon_dy", 0))
-            if tx is not None and int(tx) > 4:
-                tw  = _get_time_width_px(cell, density)
-                bix = float(int(tx) + tw + int(3 * density))
-            else:
-                bix = float(cell_w - bw - int(8 * density))
-            biy = float(cell_h - int(60 * density) - bh // 2)
         else:
             dx_dp = float(self.plugin._cfg_get("msg_icon_dx", 0))
             dy_dp = float(self.plugin._cfg_get("msg_icon_dy", 0))
-            if tx is not None and int(tx) > 4:
-                tw  = _get_time_width_px(cell, density)
-                bix = float(int(tx) + tw + int(3 * density))
-                biy = float(cell_h - int(9 * density) - bh)
+
+        # База позиции: сначала по реальным координатам времени (самый стабильный вариант)
+        if tx is not None and int(tx) > 4:
+            tw  = _get_time_width_px(cell, density)
+            bix = float(int(tx) + tw + int(3 * density))
+
+            if ty is not None and int(ty) > 0:
+                th = 14
+                try:
+                    if tl is not None:
+                        th = int(tl.getHeight())
+                except Exception:
+                    pass
+                # Центрируем по вертикали относительно строки времени
+                biy = float(int(ty) - th + (th - bh) / 2.0)
+            elif is_post:
+                # Фоллбек для постов, если timeY недоступен
+                biy = float(cell_h - int(60 * density) - bh // 2)
             else:
-                bix = float(cell_w - bw - int(8 * density))
-                biy = float(cell_h - bh - int(8 * density))
+                biy = float(cell_h - int(9 * density) - bh)
+        else:
+            # Полный фоллбек если timeX недоступен
+            bix = float(cell_w - bw - int(8 * density))
+            biy = float(cell_h - bh - int(8 * density))
 
         ix = bix + dx_dp * density
         iy = biy + dy_dp * density
@@ -4216,6 +4278,8 @@ def _draw_icon_final(self, param):
         # Клэмп
         if ix < 0: ix = 0.0
         if iy < 0: iy = 0.0
+        max_x = float(cell_w - bw - int(2 * density))
+        if ix > max_x: ix = max_x
         if iy + bh > cell_h: iy = float(cell_h - bh)
 
         canvas.drawBitmap(bmp, ix, iy, _get_draw_paint())
@@ -4245,11 +4309,13 @@ def _show_deleted_history(plugin):
             density = ctx.getResources().getDisplayMetrics().density
             C       = _theme_colors()
 
-            # Получаем последние 50 записей из store
+            # Получаем последние 50 записей из store + общий размер
             try:
-                all_ids = list(plugin._store._data.keys())
+                all_ids = plugin._store.recent_ids(50)
+                total_count = plugin._store.size()
             except Exception:
                 all_ids = []
+                total_count = len(all_ids)
 
             scroll    = ScrollView(ctx)
             container = LinearLayout(ctx)
@@ -4322,7 +4388,7 @@ def _show_deleted_history(plugin):
                     pass
 
             builder = AlertDialog.Builder(get_last_fragment().getParentActivity())
-            builder.setTitle(f"История удалений ({len(all_ids)} всего)")
+            builder.setTitle(f"История удалений ({total_count} всего)")
             builder.setView(scroll)
             builder.setPositiveButton("Закрыть", CloseClick())
             dlg = builder.create()
@@ -4349,12 +4415,13 @@ def _on_update_with_notif(self, update_name, account, update):
         if (update_name in ("TL_updateDeleteMessages", "TL_updateDeleteChannelMessages")
                 and self._cfg_get("notify_on_delete", False)):
             try:
-                ids = list(update.messages)
+                messages = getattr(update, "messages", None)
+                ids = list(messages.toArray()) if messages is not None else []
                 count = len(ids)
                 if count > 0:
                     def _notify(c=count):
                         BulletinHelper.show_info(
-                            f"🗑 Удалено {c} сообщ.", get_last_fragment())
+                            f"Удалено сообщений: {c}", get_last_fragment())
                     run_on_ui_thread(_notify)
             except Exception:
                 pass
@@ -4395,17 +4462,17 @@ def _create_settings_final(self):
 
     # Добавляем новый раздел
     try:
-        notify_on = self._cfg_get("notify_on_delete", False)
-
+        ico_history = self._ico(_SVG_CLIPBOARD, "#8774e1", 22)
         items.append(Divider())
         items.append(Header("Дополнительно"))
         items.append(Text(
-            text="📋 История удалений",
+            text="История удалений",
+            icon=ico_history,
             on_click=lambda v: _show_deleted_history(self),
         ))
         items.append(Switch(
             key="notify_on_delete",
-            text="🔔 Уведомлять при удалении",
+            text="Уведомлять при удалении",
             subtitle="Показывать баннер когда кто-то удаляет",
             default=False,
         ))
